@@ -183,7 +183,7 @@ final class LocalGameServer: ObservableObject {
                 "Content-Type": "application/javascript; charset=utf-8",
                 "Content-Length": "\(scriptData.count)",
                 "Access-Control-Allow-Origin": "*",
-                "Cache-Control": "public, max-age=86400"
+                "Cache-Control": "no-cache"
             ]
             sendResponse(connection: connection, statusCode: 200, headers: headers, body: scriptData)
             return
@@ -358,7 +358,7 @@ final class LocalGameServer: ObservableObject {
                     "Content-Type": "application/javascript; charset=utf-8",
                     "Content-Length": "\(dummyJS.count)",
                     "Access-Control-Allow-Origin": "*",
-                    "Cache-Control": "public, max-age=86400"
+                    "Cache-Control": "no-cache"
                 ]
                 sendResponse(connection: connection, statusCode: 200, headers: headers, body: dummyJS)
                 return
@@ -378,7 +378,7 @@ final class LocalGameServer: ObservableObject {
                     "Content-Type": "image/png",
                     "Content-Length": "\(transparentPNG.count)",
                     "Access-Control-Allow-Origin": "*",
-                    "Cache-Control": "public, max-age=86400"
+                    "Cache-Control": "no-cache"
                 ]
                 sendResponse(connection: connection, statusCode: 200, headers: headers, body: transparentPNG)
                 return
@@ -390,7 +390,7 @@ final class LocalGameServer: ObservableObject {
                     "Content-Type": mimeType(for: lowerExt),
                     "Content-Length": "0",
                     "Access-Control-Allow-Origin": "*",
-                    "Cache-Control": "public, max-age=86400"
+                    "Cache-Control": "no-cache"
                 ]
                 sendResponse(connection: connection, statusCode: 200, headers: headers, body: Data())
                 return
@@ -413,16 +413,13 @@ final class LocalGameServer: ObservableObject {
             return
         }
         
-        // 使用 .mappedIfSafe 实现零拷贝虚拟内存读取，极大加速大文件和频繁访问
-        guard let fileData = try? Data(contentsOf: targetFileURL, options: .mappedIfSafe) else {
+        guard let fileData = try? Data(contentsOf: targetFileURL) else {
             sendResponse(connection: connection, statusCode: 500, headers: ["Access-Control-Allow-Origin": "*"], body: Data("Read Error".utf8))
             return
         }
         
         let totalCount = fileData.count
         let mime = mimeType(for: targetFileURL.pathExtension)
-        let isStaticAsset = ["png", "jpg", "jpeg", "gif", "svg", "ogg", "m4a", "mp3", "wav", "woff", "woff2", "ttf", "js", "css"].contains(targetFileURL.pathExtension.lowercased())
-        let cacheControl = isStaticAsset ? "public, max-age=86400" : "no-cache"
         
         // 4. 解析 HTTP Range 请求 (iOS WebKit 流媒体核心要求)
         if let rangeHeader = requestHeaders["range"], rangeHeader.hasPrefix("bytes=") {
@@ -454,7 +451,7 @@ final class LocalGameServer: ObservableObject {
                 "Accept-Ranges": "bytes",
                 "Access-Control-Allow-Origin": "*",
                 "Access-Control-Allow-Methods": "GET, HEAD, POST, PUT, DELETE, OPTIONS",
-                "Cache-Control": cacheControl
+                "Cache-Control": "no-cache"
             ]
             
             sendResponse(connection: connection, statusCode: 206, headers: headers, body: method == "HEAD" ? Data() : chunk)
@@ -468,7 +465,7 @@ final class LocalGameServer: ObservableObject {
             "Accept-Ranges": "bytes",
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, HEAD, POST, PUT, DELETE, OPTIONS",
-            "Cache-Control": cacheControl
+            "Cache-Control": "no-cache"
         ]
         
         sendResponse(connection: connection, statusCode: 200, headers: headers, body: method == "HEAD" ? Data() : fileData)

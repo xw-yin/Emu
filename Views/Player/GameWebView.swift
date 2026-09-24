@@ -501,12 +501,11 @@ struct GameWebView: UIViewRepresentable {
                     .catch(() => {});
             } catch(e) {}
             
-            // 同步 HTTP 请求辅助工具 (专为 MV 同步存档读写定制，附带 1.5 秒硬超时防御)
+            // 同步 HTTP 请求辅助工具 (专为 MV 同步存档读写定制)
             function httpSync(method, url, data) {
                 try {
                     const xhr = new XMLHttpRequest();
                     xhr.open(method, url, false);
-                    xhr.timeout = 1500;
                     if (data) {
                         xhr.setRequestHeader('Content-Type', 'text/plain; charset=utf-8');
                     }
@@ -813,7 +812,10 @@ struct GameWebView: UIViewRepresentable {
             self.webView = webView
         }
         
-        let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
+        // 清理 WebKit 本地磁盘与内存缓存，确保不会命中此前因 500 异常残留的错误脚本缓存
+        WKWebsiteDataStore.default().removeData(ofTypes: [WKWebsiteDataTypeDiskCache, WKWebsiteDataTypeMemoryCache], modifiedSince: Date(timeIntervalSince1970: 0)) {}
+        
+        let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: 15)
         webView.load(request)
         
         return webView

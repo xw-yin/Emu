@@ -76,26 +76,48 @@ struct GameLibraryView: View {
             .navigationBarTitleDisplayMode(.large)
             .toolbarBackground(.hidden, for: .navigationBar) // 强制消除任何分层毛玻璃横条
             .toolbar {
-                // 横屏时：单个极简单层胶囊（彻底消除双层嵌套与反光描边）
+                // 横屏时：与游戏内视觉高度统一的超薄液态玻璃胶囊按钮组 (深色与浅色模式均完美呈现)
                 if isLandscape {
-                    ToolbarItemGroup(placement: .topBarTrailing) {
-                        Button(action: {
-                            HapticManager.shared.buttonPress()
-                            libraryManager.loadGames()
-                        }) {
-                            Image(systemName: "arrow.triangle.2.circlepath")
-                                .font(.system(size: 15, weight: .semibold))
-                                .foregroundStyle(.primary)
+                    ToolbarItem(placement: .topBarTrailing) {
+                        HStack(spacing: 8) {
+                            Button(action: {
+                                HapticManager.shared.buttonPress()
+                                libraryManager.loadGames()
+                            }) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "arrow.triangle.2.circlepath")
+                                        .font(.system(size: 13, weight: .bold))
+                                    Text("刷新")
+                                        .font(.system(size: 12, weight: .bold, design: .rounded))
+                                }
+                                .foregroundStyle(colorScheme == .dark ? Color.white.opacity(0.85) : Color.primary)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(.ultraThinMaterial)
+                                .clipShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            
+                            Button(action: {
+                                HapticManager.shared.actionBurst()
+                                isImporting = true
+                            }) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "folder.badge.plus")
+                                        .font(.system(size: 13, weight: .bold))
+                                    Text("导入")
+                                        .font(.system(size: 12, weight: .bold, design: .rounded))
+                                }
+                                .foregroundStyle(Color.cyan)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(.ultraThinMaterial)
+                                .clipShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
                         }
-                        
-                        Button(action: {
-                            HapticManager.shared.actionBurst()
-                            isImporting = true
-                        }) {
-                            Image(systemName: "folder.badge.plus")
-                                .font(.system(size: 16, weight: .semibold))
-                                .foregroundStyle(Color.blue)
-                        }
+                        .padding(4)
+                        .liquidGlass(cornerRadius: 24, strokeOpacity: 0.28)
                     }
                 }
             }
