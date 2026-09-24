@@ -15,43 +15,114 @@ struct GameWebView: UIViewRepresentable {
         preferences.allowsContentJavaScript = true
         configuration.defaultWebpagePreferences = preferences
         
-        // MARK: - 注入 0：Node.js 环境安全沙盒垫片 (防止第三方 PC 插件调用 require/fs 触发崩溃)
-        let nodeShimSource = """
+        // MARK: - 注入 0：RPG Maker 核心引擎预拦截与环境安全加固 (atDocumentStart)
+        let earlyCompatSource = """
         (function() {
-            if (typeof window.require === 'undefined') {
-                window.require = function(mod) {
-                    if (mod === 'fs') {
-                        return {
-                            existsSync: function() { return false; },
-                            readFileSync: function() { return null; },
-                            writeFileSync: function() {},
-                            mkdirSync: function() {},
-                            unlinkSync: function() {},
-                            readdirSync: function() { return []; },
-                            statSync: function() { return { isDirectory: function() { return false; } }; }
-                        };
-                    }
-                    if (mod === 'path') {
-                        return {
-                            join: function() { return Array.from(arguments).join('/'); },
-                            dirname: function(p) { return p ? p.substring(0, p.lastIndexOf('/')) : ''; },
-                            basename: function(p) { return p ? p.substring(p.lastIndexOf('/') + 1) : ''; },
-                            extname: function(p) { return p ? p.substring(p.lastIndexOf('.')) : ''; }
-                        };
-                    }
-                    return {};
-                };
+            // 1. 确保 window.Utils 无论何时被定义或重写，canReadGameFiles 恒为 true，isNwjs 恒为 false
+            function patchUtils(u) {
+                if (!u) return;
+                try {
+                    Object.defineProperty(u, 'canReadGameFiles', {
+                        configurable: true,
+                        enumerable: true,
+                        get: function() { return function() { return true; }; },
+                        set: function() {}
+                    });
+                    Object.defineProperty(u, 'isNwjs', {
+                        configurable: true,
+                        enumerable: true,
+                        get: function() { return function() { return false; }; },
+                        set: function() {}
+                    });
+                } catch(e) {}
             }
-            if (typeof window.process === 'undefined') {
-                window.process = {
-                    platform: 'darwin',
-                    mainModule: { filename: 'index.html' }
-                };
+            
+            let _Utils = window.Utils;
+            patchUtils(_Utils);
+            try {
+                Object.defineProperty(window, 'Utils', {
+                    configurable: true,
+                    enumerable: true,
+                    get: function() { return _Utils; },
+                    set: function(val) {
+                        _Utils = val;
+                        patchUtils(_Utils);
+                    }
+                });
+            } catch(e) {}
+            
+            // 2. 确保 window.SceneManager 无论何时被定义，checkFileAccess 恒为空函数（彻底免疫 local files 致命红屏）
+            function patchSceneManager(sm) {
+                if (!sm) return;
+                try {
+                    Object.defineProperty(sm, 'checkFileAccess', {
+                        configurable: true,
+                        enumerable: true,
+                        get: function() { return function() {}; },
+                        set: function() {}
+                    });
+                } catch(e) {}
             }
+            
+            let _SceneManager = window.SceneManager;
+            patchSceneManager(_SceneManager);
+            try {
+                Object.defineProperty(window, 'SceneManager', {
+                    configurable: true,
+                    enumerable: true,
+                    get: function() { return _SceneManager; },
+                    set: function(val) {
+                        _SceneManager = val;
+                        patchSceneManager(_SceneManager);
+                    }
+                });
+            } catch(e) {}
+            
+            // 3. 确保 window.AudioManager 提前拦截 checkErrors 与 checkWebAudioError
+            function patchAudioManager(am) {
+                if (!am) return;
+                try {
+                    am._canPlayOgg = true;
+                    Object.defineProperty(am, 'checkErrors', {
+                        configurable: true,
+                        enumerable: true,
+                        get: function() { return function() {}; },
+                        set: function() {}
+                    });
+                    Object.defineProperty(am, 'checkWebAudioError', {
+                        configurable: true,
+                        enumerable: true,
+                        get: function() { return function() {}; },
+                        set: function() {}
+                    });
+                } catch(e) {}
+            }
+            
+            let _AudioManager = window.AudioManager;
+            patchAudioManager(_AudioManager);
+            try {
+                Object.defineProperty(window, 'AudioManager', {
+                    configurable: true,
+                    enumerable: true,
+                    get: function() { return _AudioManager; },
+                    set: function(val) {
+                        _AudioManager = val;
+                        patchAudioManager(_AudioManager);
+                    }
+                });
+            } catch(e) {}
+            
+            // 4. 定时巡检保护（在脚本加载前期持续监控补丁状态）
+            const checkTimer = setInterval(function() {
+                if (window.Utils) patchUtils(window.Utils);
+                if (window.SceneManager) patchSceneManager(window.SceneManager);
+                if (window.AudioManager) patchAudioManager(window.AudioManager);
+            }, 25);
+            setTimeout(function() { clearInterval(checkTimer); }, 8000);
         })();
         """
-        let nodeShimScript = WKUserScript(source: nodeShimSource, injectionTime: .atDocumentStart, forMainFrameOnly: true)
-        configuration.userContentController.addUserScript(nodeShimScript)
+        let earlyCompatScript = WKUserScript(source: earlyCompatSource, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+        configuration.userContentController.addUserScript(earlyCompatScript)
         
         // MARK: - 注入 1：在 DOM 加载最早阶段注入 stbvorbis 软解内核
         let vorbisScript = WKUserScript(source: EmuScriptAssets.stbvorbisScript, injectionTime: .atDocumentStart, forMainFrameOnly: true)
@@ -200,7 +271,16 @@ struct GameWebView: UIViewRepresentable {
             }
             
             const applyEnginePatches = () => {
-                // 1. 音频引擎安全加固：阻断 YEP_X_CoreUpdatesOpt 等插件因单个音频缺失引发的 checkErrors 全屏红字崩溃
+                // 1. 核心运行环境安全加固：彻底禁用 local file 校验与纠正 NW.js 环境假阳性
+                if (window.Utils) {
+                    window.Utils.canReadGameFiles = function() { return true; };
+                    window.Utils.isNwjs = function() { return false; };
+                }
+                if (window.SceneManager) {
+                    window.SceneManager.checkFileAccess = function() {};
+                }
+                
+                // 2. 音频引擎安全加固：阻断 YEP_X_CoreUpdatesOpt 等插件因单个音频缺失引发的 checkErrors 全屏红字崩溃
                 if (window.WebAudio) {
                     window.WebAudio.canPlayOgg = function() { return true; };
                 }
