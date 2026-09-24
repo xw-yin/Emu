@@ -37,7 +37,7 @@ struct GameLogConsoleOverlay: View {
                         }
                     }
                     .padding(.leading, 16)
-                    .padding(.top, 14)
+                    .padding(.top, 66)
                 } else {
                     // 展开态：极具科幻感的暗黑半透明毛玻璃日志终端
                     VStack(alignment: .leading, spacing: 0) {
@@ -153,7 +153,7 @@ struct GameLogConsoleOverlay: View {
                             }
                         }
                     }
-                    .frame(maxWidth: .infinity, maxHeight: 220)
+                    .frame(maxWidth: .infinity, maxHeight: 260)
                     .background(Color.black.opacity(0.82))
                     .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                     .overlay {
@@ -169,7 +169,7 @@ struct GameLogConsoleOverlay: View {
                     }
                     .shadow(color: Color.black.opacity(0.6), radius: 20, y: 10)
                     .padding(.horizontal, 16)
-                    .padding(.top, 14)
+                    .padding(.top, 66)
                 }
             }
         }

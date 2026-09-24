@@ -18,7 +18,7 @@ struct GameWebView: UIViewRepresentable {
         // MARK: - 注入 0：RPG Maker 核心引擎预拦截与环境安全加固 (atDocumentStart)
         let earlyCompatSource = """
         (function() {
-            // 0. 日志与调试捕获通道：将 JS 控制台错误与场景状态实时投递至原生控制台
+            // 0. 日志与调试捕获通道：将 JS 控制台日志、错误与场景状态实时投递至原生控制台
             function postNativeLog(level, message) {
                 try {
                     if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.emuLog) {
@@ -53,6 +53,17 @@ struct GameWebView: UIViewRepresentable {
                 origConsoleWarn.apply(console, arguments);
             };
             
+            const origConsoleLog = console.log;
+            console.log = function() {
+                try {
+                    const args = Array.from(arguments).map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
+                    if (args.includes('[Emu') || args.includes('RPG') || args.includes('Manager') || args.includes('Scene') || args.includes('load') || args.includes('start') || args.includes('init') || args.includes('Plugin') || args.includes('Data')) {
+                        postNativeLog('info', args);
+                    }
+                } catch(e) {}
+                origConsoleLog.apply(console, arguments);
+            };
+            
             // 监听场景生命周期，感知标题画面或主地图真正就绪
             function monitorSceneLifecycle(sceneClass, sceneName) {
                 if (!sceneClass || !sceneClass.prototype) return;
@@ -71,148 +82,79 @@ struct GameWebView: UIViewRepresentable {
                 if (window.Scene_Map) monitorSceneLifecycle(window.Scene_Map, '游戏地图 (Scene_Map)');
                 if (window.Scene_Boot) monitorSceneLifecycle(window.Scene_Boot, '启动引擎 (Scene_Boot)');
                 if (window.Scene_Title && window.Scene_Map) clearInterval(sceneMonitorInterval);
-            }, 100);
+            }, 50);
             
-            // 1. 确保 window.Utils 无论何时被定义或重写，canReadGameFiles 恒为 true，isNwjs 恒为 false
+            // 1. Utils 兼容打桩
             function patchUtils(u) {
-                if (!u) return;
+                if (!u || u._emuPatched) return;
                 try {
-                    Object.defineProperty(u, 'canReadGameFiles', {
-                        configurable: true,
-                        enumerable: true,
-                        get: function() { return function() { return true; }; },
-                        set: function() {}
-                    });
-                    Object.defineProperty(u, 'isNwjs', {
-                        configurable: true,
-                        enumerable: true,
-                        get: function() { return function() { return false; }; },
-                        set: function() {}
-                    });
+                    u.canReadGameFiles = function() { return true; };
+                    u.isNwjs = function() { return false; };
+                    u._emuPatched = true;
+                    postNativeLog('info', '已注入 Utils 引擎兼容层');
                 } catch(e) {}
             }
             
-            let _Utils = window.Utils;
-            patchUtils(_Utils);
-            try {
-                Object.defineProperty(window, 'Utils', {
-                    configurable: true,
-                    enumerable: true,
-                    get: function() { return _Utils; },
-                    set: function(val) {
-                        _Utils = val;
-                        patchUtils(_Utils);
-                    }
-                });
-            } catch(e) {}
-            
-            // 2. 确保 window.SceneManager 无论何时被定义，checkFileAccess、checkPluginErrors、checkWebGL 恒为空函数（彻底免疫启动自检崩溃）
+            // 2. SceneManager 启动自检加固（彻底免疫 WebGL 检测报错与空抛异常）
             function patchSceneManager(sm) {
-                if (!sm) return;
+                if (!sm || sm._emuPatched) return;
                 try {
-                    Object.defineProperty(sm, 'checkFileAccess', {
-                        configurable: true,
-                        enumerable: true,
-                        get: function() { return function() {}; },
-                        set: function() {}
-                    });
-                    Object.defineProperty(sm, 'checkPluginErrors', {
-                        configurable: true,
-                        enumerable: true,
-                        get: function() { return function() {}; },
-                        set: function() {}
-                    });
-                    Object.defineProperty(sm, 'checkWebGL', {
-                        configurable: true,
-                        enumerable: true,
-                        get: function() { return function() {}; },
-                        set: function() {}
-                    });
+                    sm.checkFileAccess = function() {};
+                    sm.checkPluginErrors = function() {};
+                    sm.checkWebGL = function() {};
+                    sm._emuPatched = true;
+                    postNativeLog('info', '已注入 SceneManager 自检保护层');
                 } catch(e) {}
             }
             
-            let _SceneManager = window.SceneManager;
-            patchSceneManager(_SceneManager);
-            try {
-                Object.defineProperty(window, 'SceneManager', {
-                    configurable: true,
-                    enumerable: true,
-                    get: function() { return _SceneManager; },
-                    set: function(val) {
-                        _SceneManager = val;
-                        patchSceneManager(_SceneManager);
-                    }
-                });
-            } catch(e) {}
-
-            // 3. 确保 window.PluginManager 无论何时被定义，checkErrors 恒为空函数，消除单个插件缺失阻断启动
+            // 3. PluginManager 异常熔断
             function patchPluginManager(pm) {
-                if (!pm) return;
+                if (!pm || pm._emuPatched) return;
                 try {
                     pm._errorUrls = [];
-                    Object.defineProperty(pm, 'checkErrors', {
-                        configurable: true,
-                        enumerable: true,
-                        get: function() { return function() { this._errorUrls = []; }; },
-                        set: function() {}
-                    });
+                    pm.checkErrors = function() { this._errorUrls = []; };
                     pm.onError = function(e) {
                         console.warn('[Emu] 忽略插件加载失败:', e?.target?.src || e);
                     };
+                    pm._emuPatched = true;
+                    postNativeLog('info', '已注入 PluginManager 容错层');
                 } catch(e) {}
             }
             
-            let _PluginManager = window.PluginManager;
-            patchPluginManager(_PluginManager);
-            try {
-                Object.defineProperty(window, 'PluginManager', {
-                    configurable: true,
-                    enumerable: true,
-                    get: function() { return _PluginManager; },
-                    set: function(val) {
-                        _PluginManager = val;
-                        patchPluginManager(_PluginManager);
-                    }
-                });
-            } catch(e) {}
-            
-            // 4. 确保 window.AudioManager 提前拦截 checkErrors 与 checkWebAudioError
+            // 4. AudioManager 音频支持声明
             function patchAudioManager(am) {
-                if (!am) return;
+                if (!am || am._emuPatched) return;
                 try {
                     am._canPlayOgg = true;
-                    Object.defineProperty(am, 'checkErrors', {
-                        configurable: true,
-                        enumerable: true,
-                        get: function() { return function() {}; },
-                        set: function() {}
-                    });
-                    Object.defineProperty(am, 'checkWebAudioError', {
-                        configurable: true,
-                        enumerable: true,
-                        get: function() { return function() {}; },
-                        set: function() {}
-                    });
+                    am.checkErrors = function() {};
+                    am.checkWebAudioError = function() {};
+                    am._emuPatched = true;
+                    postNativeLog('info', '已注入 AudioManager 音频支持');
                 } catch(e) {}
             }
             
-            let _AudioManager = window.AudioManager;
-            patchAudioManager(_AudioManager);
-            try {
-                Object.defineProperty(window, 'AudioManager', {
-                    configurable: true,
-                    enumerable: true,
-                    get: function() { return _AudioManager; },
-                    set: function(val) {
-                        _AudioManager = val;
-                        patchAudioManager(_AudioManager);
+            // 5. DataManager 监控数据库载入进度
+            function patchDataManager(dm) {
+                if (!dm || dm._emuPatched) return;
+                try {
+                    const origOnLoad = dm.onLoad;
+                    if (origOnLoad && !origOnLoad._emuWrapped) {
+                        dm.onLoad = function(object) {
+                            try {
+                                const name = object ? (object.constructor ? object.constructor.name : '数据') : '数据';
+                                postNativeLog('info', '数据载入就绪: ' + name);
+                            } catch(e) {}
+                            return origOnLoad.apply(this, arguments);
+                        };
+                        dm.onLoad._emuWrapped = true;
                     }
-                });
-            } catch(e) {}
-
-            // 5. 核心存档安全加固：确保 Game_Map 在 $dataMap 为空时访问 width/height/adjustX/adjustY/events 不崩溃
+                    dm._emuPatched = true;
+                } catch(e) {}
+            }
+            
+            // 6. Game_Map 核心保护
             function patchGameMap(gm) {
-                if (!gm || !gm.prototype) return;
+                if (!gm || !gm.prototype || gm._emuPatched) return;
                 try {
                     gm.prototype.width = function() {
                         return (window.$dataMap && window.$dataMap.width) ? window.$dataMap.width : 20;
@@ -253,26 +195,13 @@ struct GameWebView: UIViewRepresentable {
                     gm.prototype.event = function(eventId) {
                         return (this._events && this._events[eventId]) ? this._events[eventId] : null;
                     };
+                    gm._emuPatched = true;
                 } catch(e) {}
             }
             
-            let _Game_Map = window.Game_Map;
-            patchGameMap(_Game_Map);
-            try {
-                Object.defineProperty(window, 'Game_Map', {
-                    configurable: true,
-                    enumerable: true,
-                    get: function() { return _Game_Map; },
-                    set: function(val) {
-                        _Game_Map = val;
-                        patchGameMap(_Game_Map);
-                    }
-                });
-            } catch(e) {}
-
-            // 6. 存档数据校验安全加固：保护所有 DrillUp 插件的 checkSysData 不中断读档
+            // 7. Game_System 存档校验加固
             function patchGameSystem(gs) {
-                if (!gs || !gs.prototype) return;
+                if (!gs || !gs.prototype || gs._emuPatched) return;
                 try {
                     for (const key of Object.getOwnPropertyNames(gs.prototype)) {
                         if (key.includes('checkSysData') && typeof gs.prototype[key] === 'function' && !gs.prototype[key]._emuWrapped) {
@@ -288,26 +217,13 @@ struct GameWebView: UIViewRepresentable {
                             gs.prototype[key] = wrapped;
                         }
                     }
+                    gs._emuPatched = true;
                 } catch(e) {}
             }
-
-            let _Game_System = window.Game_System;
-            patchGameSystem(_Game_System);
-            try {
-                Object.defineProperty(window, 'Game_System', {
-                    configurable: true,
-                    enumerable: true,
-                    get: function() { return _Game_System; },
-                    set: function(val) {
-                        _Game_System = val;
-                        patchGameSystem(_Game_System);
-                    }
-                });
-            } catch(e) {}
-
-            // 7. 场景切换安全加固：防止读档进入 Scene_Map 时因黑屏遮罩未清除导致画面卡死假象
+            
+            // 8. Scene_Map 进图淡入保护
             function patchSceneMap(sm) {
-                if (!sm || !sm.prototype) return;
+                if (!sm || !sm.prototype || sm._emuPatched) return;
                 try {
                     const origStart = sm.prototype.start;
                     if (origStart && !origStart._emuWrapped) {
@@ -324,26 +240,13 @@ struct GameWebView: UIViewRepresentable {
                         wrappedStart._emuWrapped = true;
                         sm.prototype.start = wrappedStart;
                     }
+                    sm._emuPatched = true;
                 } catch(e) {}
             }
             
-            let _Scene_Map = window.Scene_Map;
-            patchSceneMap(_Scene_Map);
-            try {
-                Object.defineProperty(window, 'Scene_Map', {
-                    configurable: true,
-                    enumerable: true,
-                    get: function() { return _Scene_Map; },
-                    set: function(val) {
-                        _Scene_Map = val;
-                        patchSceneMap(_Scene_Map);
-                    }
-                });
-            } catch(e) {}
-
-            // 8. 资源加载保护：杜绝单张缺失图片引发 ImageManager 崩溃
+            // 9. ImageManager 容错
             function patchImageManager(im) {
-                if (!im) return;
+                if (!im || im._emuPatched) return;
                 try {
                     im.throwLoadError = function(bitmap) {
                         console.warn('[Emu] 忽略缺失图片加载失败:', bitmap ? (bitmap._url || bitmap.url) : 'unknown');
@@ -352,60 +255,28 @@ struct GameWebView: UIViewRepresentable {
                             bitmap._isLoading = false;
                         }
                     };
+                    im._emuPatched = true;
                 } catch(e) {}
             }
-            let _ImageManager = window.ImageManager;
-            patchImageManager(_ImageManager);
-            try {
-                Object.defineProperty(window, 'ImageManager', {
-                    configurable: true,
-                    enumerable: true,
-                    get: function() { return _ImageManager; },
-                    set: function(val) {
-                        _ImageManager = val;
-                        patchImageManager(_ImageManager);
-                    }
-                });
-            } catch(e) {}
-
+            
             window._emuPatchGameMap = patchGameMap;
             window._emuPatchGameSystem = patchGameSystem;
             window._emuPatchSceneMap = patchSceneMap;
             window._emuPatchImageManager = patchImageManager;
             
-            // 9. 全局异常可视化浮动条（在真机无控制台环境下直观定位脚本错误，杜绝静默卡死）
-            function showErrorBanner(msg) {
-                try {
-                    let el = document.getElementById('_emu_err_banner');
-                    if (!el) {
-                        el = document.createElement('div');
-                        el.id = '_emu_err_banner';
-                        el.style.cssText = 'position:fixed;top:6px;left:8px;right:8px;background:rgba(220,20,60,0.9);color:#fff;font-size:11px;line-height:1.4;padding:6px 10px;border-radius:6px;z-index:999999;word-break:break-all;pointer-events:none;font-family:sans-serif;box-shadow:0 2px 8px rgba(0,0,0,0.5);';
-                        (document.body || document.documentElement).appendChild(el);
-                    }
-                    el.textContent = '[Emu 调试] ' + msg;
-                    setTimeout(() => { if (el && el.parentNode) el.remove(); }, 8000);
-                } catch(e) {}
-            }
-            window.addEventListener('error', function(e) {
-                if (e && e.message) showErrorBanner(e.message);
-            });
-            window.addEventListener('unhandledrejection', function(e) {
-                if (e && e.reason) showErrorBanner(e.reason.message || String(e.reason));
-            });
-
-            // 10. 定时巡检保护（在脚本加载前期持续监控补丁状态）
+            // 10. 定时巡检保护（在脚本加载前期持续挂载补丁，绝不影响 JS 引擎原型声明）
             const checkTimer = setInterval(function() {
                 if (window.Utils) patchUtils(window.Utils);
                 if (window.SceneManager) patchSceneManager(window.SceneManager);
                 if (window.PluginManager) patchPluginManager(window.PluginManager);
                 if (window.AudioManager) patchAudioManager(window.AudioManager);
+                if (window.DataManager) patchDataManager(window.DataManager);
                 if (window.ImageManager) patchImageManager(window.ImageManager);
                 if (window.Game_Map) patchGameMap(window.Game_Map);
                 if (window.Game_System) patchGameSystem(window.Game_System);
                 if (window.Scene_Map) patchSceneMap(window.Scene_Map);
-            }, 25);
-            setTimeout(function() { clearInterval(checkTimer); }, 10000);
+            }, 20);
+            setTimeout(function() { clearInterval(checkTimer); }, 15000);
         })();
         """
         let earlyCompatScript = WKUserScript(source: earlyCompatSource, injectionTime: .atDocumentStart, forMainFrameOnly: true)

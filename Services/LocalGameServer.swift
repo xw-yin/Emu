@@ -200,6 +200,7 @@ final class LocalGameServer: ObservableObject {
         
         // 批量存档秒开接口：一次性返回 save 目录下所有存档内容供 JS 缓存预热，彻底杜绝读档同步 XHR 挂死
         if req.path == "/_emu/saves" {
+            GameLogManager.shared.log("💾 预读存档索引 (GET /_emu/saves)", level: .server)
             handleListSaves(connection: connection)
             return
         }
@@ -488,15 +489,30 @@ final class LocalGameServer: ObservableObject {
                 "Cache-Control": "no-cache"
             ]
             
+            let chunkKb = max(1, chunkLength / 1024)
+            GameLogManager.shared.log("🎵 音频流: \(sanitizedPath) (\(chunkKb) KB)", level: .server)
             sendResponse(connection: connection, statusCode: 206, headers: headers, body: method == "HEAD" ? Data() : chunk)
             return
         }
         
         // 5. 普通全量请求 200 OK
-        if sanitizedPath != "index.html" {
-            let kb = max(1, totalCount / 1024)
-            GameLogManager.shared.log("\(sanitizedPath) (\(kb) KB)", level: .success)
+        let kb = max(1, totalCount / 1024)
+        let ext = targetFileURL.pathExtension.lowercased()
+        let icon: String
+        if ["js"].contains(ext) {
+            icon = "📜 脚本"
+        } else if ["json"].contains(ext) {
+            icon = "📋 数据"
+        } else if ["png", "jpg", "jpeg", "gif", "webp"].contains(ext) {
+            icon = "🎨 贴图"
+        } else if ["ogg", "m4a", "mp3", "wav"].contains(ext) {
+            icon = "🎵 音频"
+        } else if sanitizedPath == "index.html" {
+            icon = "🌐 入口"
+        } else {
+            icon = "📦 资源"
         }
+        GameLogManager.shared.log("\(icon): \(sanitizedPath) (\(kb) KB)", level: .success)
         
         let headers: [String: String] = [
             "Content-Type": mime,
