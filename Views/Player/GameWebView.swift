@@ -250,7 +250,7 @@ struct GameWebView: UIViewRepresentable {
                 });
             } catch(e) {}
 
-            // 7. 场景切换安全加固：防止读档进入 Scene_Map 时因黑屏遮罩未清除或资源加载阻断导致画面卡死假象
+            // 7. 场景切换安全加固：防止读档进入 Scene_Map 时因黑屏遮罩未清除导致画面卡死假象
             function patchSceneMap(sm) {
                 if (!sm || !sm.prototype) return;
                 try {
@@ -269,35 +269,6 @@ struct GameWebView: UIViewRepresentable {
                         wrappedStart._emuWrapped = true;
                         sm.prototype.start = wrappedStart;
                     }
-                    
-                    let mapReadyWaitCount = 0;
-                    const origIsReady = sm.prototype.isReady;
-                    if (origIsReady && !origIsReady._emuWrapped) {
-                        const wrappedMapIsReady = function() {
-                            const ready = origIsReady.call(this);
-                            if (ready) {
-                                mapReadyWaitCount = 0;
-                                return true;
-                            }
-                            mapReadyWaitCount++;
-                            // 若地图等待就绪超过 90 帧 (~1.5 秒)，强制补全空地图并启动，彻底杜绝黑屏死锁
-                            if (mapReadyWaitCount > 90) {
-                                console.warn('[Emu] Scene_Map 就绪超时，强制启动地图');
-                                if (!this._mapLoaded) {
-                                    if (!window.$dataMap) {
-                                        window.$dataMap = { width: 20, height: 15, data: [], events: [null], scrollType: 0, tilesetId: 1 };
-                                    }
-                                    try { this.onMapLoaded(); } catch(e) {}
-                                    this._mapLoaded = true;
-                                }
-                                mapReadyWaitCount = 0;
-                                return true;
-                            }
-                            return false;
-                        };
-                        wrappedMapIsReady._emuWrapped = true;
-                        sm.prototype.isReady = wrappedMapIsReady;
-                    }
                 } catch(e) {}
             }
             
@@ -315,7 +286,7 @@ struct GameWebView: UIViewRepresentable {
                 });
             } catch(e) {}
 
-            // 8. 资源加载保护：杜绝单张缺失图片引发 ImageManager 崩溃或阻断 isReady
+            // 8. 资源加载保护：杜绝单张缺失图片引发 ImageManager 崩溃
             function patchImageManager(im) {
                 if (!im) return;
                 try {
@@ -324,31 +295,8 @@ struct GameWebView: UIViewRepresentable {
                         if (bitmap) {
                             bitmap._hasError = false;
                             bitmap._isLoading = false;
-                            bitmap._loadingState = 'loaded';
                         }
                     };
-                    
-                    let isReadyWaitCount = 0;
-                    const origIsReady = im.isReady;
-                    if (origIsReady && !origIsReady._emuWrapped) {
-                        const wrappedIsReady = function() {
-                            const ready = origIsReady.call(this);
-                            if (ready) {
-                                isReadyWaitCount = 0;
-                                return true;
-                            }
-                            isReadyWaitCount++;
-                            // 保护：等待图片资源就绪若超过 90 帧 (~1.5 秒)，强制放行进图
-                            if (isReadyWaitCount > 90) {
-                                console.warn('[Emu] 图片加载等待超时，强制放行启动');
-                                isReadyWaitCount = 0;
-                                return true;
-                            }
-                            return false;
-                        };
-                        wrappedIsReady._emuWrapped = true;
-                        im.isReady = wrappedIsReady;
-                    }
                 } catch(e) {}
             }
             let _ImageManager = window.ImageManager;
