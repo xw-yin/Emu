@@ -1,6 +1,7 @@
 # Xcode & Build
 build/
 DerivedData/
+*.ipa
 *.moved-aside
 *.xcuserstate
 xcuserdata/
