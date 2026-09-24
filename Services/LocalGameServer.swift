@@ -297,6 +297,20 @@ final class LocalGameServer: ObservableObject {
         
         // 若仍然找不到
         guard fileManager.fileExists(atPath: targetFileURL.path) else {
+            let lowerPath = sanitizedPath.lowercased()
+            // 容错处理：对于缺失的第三方插件或 JS 脚本，返回 200 OK 空桩，防止 RPG Maker 触发 script onerror 崩溃
+            if lowerPath.hasSuffix(".js") {
+                let dummyJS = Data("// Emu auto-generated stub for missing script: \(sanitizedPath)\n".utf8)
+                let headers = [
+                    "Content-Type": "application/javascript; charset=utf-8",
+                    "Content-Length": "\(dummyJS.count)",
+                    "Access-Control-Allow-Origin": "*",
+                    "Cache-Control": "no-cache"
+                ]
+                sendResponse(connection: connection, statusCode: 200, headers: headers, body: dummyJS)
+                return
+            }
+            
             sendResponse(connection: connection, statusCode: 404, headers: ["Access-Control-Allow-Origin": "*"], body: Data("Not Found".utf8))
             return
         }

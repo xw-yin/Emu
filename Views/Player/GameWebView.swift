@@ -51,11 +51,23 @@ struct GameWebView: UIViewRepresentable {
                 });
             } catch(e) {}
             
-            // 2. 确保 window.SceneManager 无论何时被定义，checkFileAccess 恒为空函数（彻底免疫 local files 致命红屏）
+            // 2. 确保 window.SceneManager 无论何时被定义，checkFileAccess、checkPluginErrors、checkWebGL 恒为空函数（彻底免疫启动自检崩溃）
             function patchSceneManager(sm) {
                 if (!sm) return;
                 try {
                     Object.defineProperty(sm, 'checkFileAccess', {
+                        configurable: true,
+                        enumerable: true,
+                        get: function() { return function() {}; },
+                        set: function() {}
+                    });
+                    Object.defineProperty(sm, 'checkPluginErrors', {
+                        configurable: true,
+                        enumerable: true,
+                        get: function() { return function() {}; },
+                        set: function() {}
+                    });
+                    Object.defineProperty(sm, 'checkWebGL', {
                         configurable: true,
                         enumerable: true,
                         get: function() { return function() {}; },
@@ -77,8 +89,39 @@ struct GameWebView: UIViewRepresentable {
                     }
                 });
             } catch(e) {}
+
+            // 3. 确保 window.PluginManager 无论何时被定义，checkErrors 恒为空函数，消除单个插件缺失阻断启动
+            function patchPluginManager(pm) {
+                if (!pm) return;
+                try {
+                    pm._errorUrls = [];
+                    Object.defineProperty(pm, 'checkErrors', {
+                        configurable: true,
+                        enumerable: true,
+                        get: function() { return function() { this._errorUrls = []; }; },
+                        set: function() {}
+                    });
+                    pm.onError = function(e) {
+                        console.warn('[Emu] 忽略插件加载失败:', e?.target?.src || e);
+                    };
+                } catch(e) {}
+            }
             
-            // 3. 确保 window.AudioManager 提前拦截 checkErrors 与 checkWebAudioError
+            let _PluginManager = window.PluginManager;
+            patchPluginManager(_PluginManager);
+            try {
+                Object.defineProperty(window, 'PluginManager', {
+                    configurable: true,
+                    enumerable: true,
+                    get: function() { return _PluginManager; },
+                    set: function(val) {
+                        _PluginManager = val;
+                        patchPluginManager(_PluginManager);
+                    }
+                });
+            } catch(e) {}
+            
+            // 4. 确保 window.AudioManager 提前拦截 checkErrors 与 checkWebAudioError
             function patchAudioManager(am) {
                 if (!am) return;
                 try {
@@ -112,10 +155,11 @@ struct GameWebView: UIViewRepresentable {
                 });
             } catch(e) {}
             
-            // 4. 定时巡检保护（在脚本加载前期持续监控补丁状态）
+            // 5. 定时巡检保护（在脚本加载前期持续监控补丁状态）
             const checkTimer = setInterval(function() {
                 if (window.Utils) patchUtils(window.Utils);
                 if (window.SceneManager) patchSceneManager(window.SceneManager);
+                if (window.PluginManager) patchPluginManager(window.PluginManager);
                 if (window.AudioManager) patchAudioManager(window.AudioManager);
             }, 25);
             setTimeout(function() { clearInterval(checkTimer); }, 8000);
@@ -271,13 +315,19 @@ struct GameWebView: UIViewRepresentable {
             }
             
             const applyEnginePatches = () => {
-                // 1. 核心运行环境安全加固：彻底禁用 local file 校验与纠正 NW.js 环境假阳性
+                // 1. 核心运行环境安全加固：彻底禁用 local file 校验、插件缺失中断与纠正 NW.js 环境假阳性
                 if (window.Utils) {
                     window.Utils.canReadGameFiles = function() { return true; };
                     window.Utils.isNwjs = function() { return false; };
                 }
+                if (window.PluginManager) {
+                    window.PluginManager._errorUrls = [];
+                    window.PluginManager.checkErrors = function() { this._errorUrls = []; };
+                }
                 if (window.SceneManager) {
                     window.SceneManager.checkFileAccess = function() {};
+                    window.SceneManager.checkPluginErrors = function() {};
+                    window.SceneManager.checkWebGL = function() {};
                 }
                 
                 // 2. 音频引擎安全加固：阻断 YEP_X_CoreUpdatesOpt 等插件因单个音频缺失引发的 checkErrors 全屏红字崩溃
