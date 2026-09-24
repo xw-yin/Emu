@@ -155,7 +155,7 @@ struct GameWebView: UIViewRepresentable {
                 });
             } catch(e) {}
 
-            // 5. 核心存档安全加固：确保 Game_Map 在 $dataMap 为空时访问 width/height 不崩溃（彻底修复 DrillUp 镜头插件读档崩溃）
+            // 5. 核心存档安全加固：确保 Game_Map 在 $dataMap 为空时访问 width/height/adjustX/adjustY/events 不崩溃
             function patchGameMap(gm) {
                 if (!gm || !gm.prototype) return;
                 try {
@@ -173,6 +173,30 @@ struct GameWebView: UIViewRepresentable {
                     };
                     gm.prototype.isLoopVertical = function() {
                         return (window.$dataMap && window.$dataMap.scrollType) ? (window.$dataMap.scrollType === 1 || window.$dataMap.scrollType === 3) : false;
+                    };
+                    gm.prototype.adjustX = function(x) {
+                        const w = (window.$dataMap && window.$dataMap.width) ? window.$dataMap.width : 20;
+                        if (this.isLoopHorizontal && this.isLoopHorizontal() && x < this._displayX - (this.width() - this.screenTileX()) / 2) {
+                            return x - this._displayX + w;
+                        } else {
+                            return x - this._displayX;
+                        }
+                    };
+                    gm.prototype.adjustY = function(y) {
+                        const h = (window.$dataMap && window.$dataMap.height) ? window.$dataMap.height : 15;
+                        if (this.isLoopVertical && this.isLoopVertical() && y < this._displayY - (this.height() - this.screenTileY()) / 2) {
+                            return y - this._displayY + h;
+                        } else {
+                            return y - this._displayY;
+                        }
+                    };
+                    gm.prototype.events = function() {
+                        return (this._events && Array.isArray(this._events)) ? this._events.filter(function(event) {
+                            return !!event;
+                        }) : [];
+                    };
+                    gm.prototype.event = function(eventId) {
+                        return (this._events && this._events[eventId]) ? this._events[eventId] : null;
                     };
                 } catch(e) {}
             }
@@ -225,17 +249,106 @@ struct GameWebView: UIViewRepresentable {
                     }
                 });
             } catch(e) {}
+
+            // 7. 场景切换安全加固：防止读档进入 Scene_Map 时因黑屏遮罩未清除导致画面卡死假象
+            function patchSceneMap(sm) {
+                if (!sm || !sm.prototype) return;
+                try {
+                    const origStart = sm.prototype.start;
+                    if (origStart && !origStart._emuWrapped) {
+                        const wrappedStart = function() {
+                            try {
+                                origStart.apply(this, arguments);
+                            } catch(err) {
+                                console.warn('[Emu] Scene_Map.start 异常:', err);
+                            }
+                            if (this._fadeSprite && this._fadeSprite.opacity > 0) {
+                                this.startFadeIn(this.fadeSpeed ? this.fadeSpeed() : 24, false);
+                            }
+                        };
+                        wrappedStart._emuWrapped = true;
+                        sm.prototype.start = wrappedStart;
+                    }
+                } catch(e) {}
+            }
+            
+            let _Scene_Map = window.Scene_Map;
+            patchSceneMap(_Scene_Map);
+            try {
+                Object.defineProperty(window, 'Scene_Map', {
+                    configurable: true,
+                    enumerable: true,
+                    get: function() { return _Scene_Map; },
+                    set: function(val) {
+                        _Scene_Map = val;
+                        patchSceneMap(_Scene_Map);
+                    }
+                });
+            } catch(e) {}
+
+            // 8. 资源加载保护：杜绝单张缺失图片引发 ImageManager 崩溃或阻断 isReady
+            function patchImageManager(im) {
+                if (!im) return;
+                try {
+                    im.throwLoadError = function(bitmap) {
+                        console.warn('[Emu] 忽略缺失图片加载失败:', bitmap ? (bitmap._url || bitmap.url) : 'unknown');
+                        if (bitmap) {
+                            bitmap._hasError = false;
+                            bitmap._isLoading = false;
+                        }
+                    };
+                } catch(e) {}
+            }
+            let _ImageManager = window.ImageManager;
+            patchImageManager(_ImageManager);
+            try {
+                Object.defineProperty(window, 'ImageManager', {
+                    configurable: true,
+                    enumerable: true,
+                    get: function() { return _ImageManager; },
+                    set: function(val) {
+                        _ImageManager = val;
+                        patchImageManager(_ImageManager);
+                    }
+                });
+            } catch(e) {}
+
             window._emuPatchGameMap = patchGameMap;
             window._emuPatchGameSystem = patchGameSystem;
+            window._emuPatchSceneMap = patchSceneMap;
+            window._emuPatchImageManager = patchImageManager;
             
-            // 7. 定时巡检保护（在脚本加载前期持续监控补丁状态）
+            // 9. 全局异常可视化浮动条（在真机无控制台环境下直观定位脚本错误，杜绝静默卡死）
+            function showErrorBanner(msg) {
+                try {
+                    let el = document.getElementById('_emu_err_banner');
+                    if (!el) {
+                        el = document.createElement('div');
+                        el.id = '_emu_err_banner';
+                        el.style.cssText = 'position:fixed;top:6px;left:8px;right:8px;background:rgba(220,20,60,0.9);color:#fff;font-size:11px;line-height:1.4;padding:6px 10px;border-radius:6px;z-index:999999;word-break:break-all;pointer-events:none;font-family:sans-serif;box-shadow:0 2px 8px rgba(0,0,0,0.5);';
+                        (document.body || document.documentElement).appendChild(el);
+                    }
+                    el.textContent = '[Emu 调试] ' + msg;
+                    setTimeout(() => { if (el && el.parentNode) el.remove(); }, 8000);
+                } catch(e) {}
+            }
+            window.addEventListener('error', function(e) {
+                if (e && e.message) showErrorBanner(e.message);
+            });
+            window.addEventListener('unhandledrejection', function(e) {
+                if (e && e.reason) showErrorBanner(e.reason.message || String(e.reason));
+            });
+
+            // 10. 定时巡检保护（在脚本加载前期持续监控补丁状态）
             const checkTimer = setInterval(function() {
                 if (window.Utils) patchUtils(window.Utils);
                 if (window.SceneManager) patchSceneManager(window.SceneManager);
                 if (window.PluginManager) patchPluginManager(window.PluginManager);
                 if (window.AudioManager) patchAudioManager(window.AudioManager);
+                if (window.ImageManager) patchImageManager(window.ImageManager);
                 if (window.Game_Map) patchGameMap(window.Game_Map);
                 if (window.Game_System) patchGameSystem(window.Game_System);
+                if (window.Scene_Map) patchSceneMap(window.Scene_Map);
             }, 25);
             setTimeout(function() { clearInterval(checkTimer); }, 10000);
         })();
@@ -448,14 +561,19 @@ struct GameWebView: UIViewRepresentable {
                             const path = this.localFilePath(savefileId);
                             const res = httpSync('GET', '/' + path);
                             if (res.status >= 200 && res.status < 300 && res.text) {
+                                const text = res.text.trim();
+                                // 极速快慢路径优化：若本身就是明文 JSON (以 { 或 [ 开头)，直接返回，杜绝 LZString 解压缩百万级字符锁死主线程
+                                if (text.startsWith('{') || text.startsWith('[')) {
+                                    return text;
+                                }
                                 try {
                                     if (window.LZString) {
-                                        const decomp = window.LZString.decompressFromBase64(res.text);
+                                        const decomp = window.LZString.decompressFromBase64(text);
                                         if (decomp) return decomp;
                                     }
-                                    return res.text;
+                                    return text;
                                 } catch(e) {
-                                    return res.text;
+                                    return text;
                                 }
                             }
                             return this.loadFromWebStorage ? this.loadFromWebStorage(savefileId) : null;
@@ -576,27 +694,66 @@ struct GameWebView: UIViewRepresentable {
                         if (globalInfo && globalInfo[savefileId]) {
                             return true;
                         }
+                        if (window.StorageManager && window.StorageManager.localFileExists) {
+                            return window.StorageManager.localFileExists(savefileId);
+                        }
                         return false;
                     };
                     
                     if (!window.DataManager._emuExtractHooked) {
                         const origExtract = window.DataManager.extractSaveContents;
                         window.DataManager.extractSaveContents = function(contents) {
+                            if (!contents) return;
+                            
+                            // 确保核心全局对象在执行插件钩子链前安全还原
+                            if (contents.system) window.$gameSystem = contents.system;
+                            if (contents.screen) window.$gameScreen = contents.screen;
+                            if (contents.timer) window.$gameTimer = contents.timer;
+                            if (contents.switches) window.$gameSwitches = contents.switches;
+                            if (contents.variables) window.$gameVariables = contents.variables;
+                            if (contents.selfSwitches) window.$gameSelfSwitches = contents.selfSwitches;
+                            if (contents.actors) window.$gameActors = contents.actors;
+                            if (contents.party) window.$gameParty = contents.party;
+                            if (contents.map) window.$gameMap = contents.map;
+                            if (contents.player) window.$gamePlayer = contents.player;
+                            
                             if (window._emuPatchGameMap && window.Game_Map) window._emuPatchGameMap(window.Game_Map);
                             if (window._emuPatchGameSystem && window.Game_System) window._emuPatchGameSystem(window.Game_System);
+                            if (window._emuPatchSceneMap && window.Scene_Map) window._emuPatchSceneMap(window.Scene_Map);
+                            if (window._emuPatchImageManager && window.ImageManager) window._emuPatchImageManager(window.ImageManager);
+                            
+                            // 虚拟提供基础 $dataMap，防止第三方插件在读档检查时访问 $dataMap 属性抛错中断
+                            const hadDataMap = !!window.$dataMap;
+                            if (!hadDataMap) {
+                                window.$dataMap = {
+                                    width: (window.$gameMap && typeof window.$gameMap.width === 'function' ? window.$gameMap.width() : 20) || 20,
+                                    height: (window.$gameMap && typeof window.$gameMap.height === 'function' ? window.$gameMap.height() : 15) || 15,
+                                    data: [],
+                                    events: [null],
+                                    scrollType: 0,
+                                    tilesetId: 1
+                                };
+                            }
+                            
                             try {
                                 if (origExtract) origExtract.call(this, contents);
                             } catch(err) {
                                 console.warn('[Emu] 捕获 extractSaveContents 异常并安全恢复:', err);
+                            } finally {
+                                if (!hadDataMap) {
+                                    window.$dataMap = null;
+                                }
                             }
                         };
                         window.DataManager._emuExtractHooked = true;
                     }
                 }
                 
-                // 4. 主动应用 Game_Map 与 Game_System 补丁
+                // 4. 主动应用补丁
                 if (window._emuPatchGameMap && window.Game_Map) window._emuPatchGameMap(window.Game_Map);
                 if (window._emuPatchGameSystem && window.Game_System) window._emuPatchGameSystem(window.Game_System);
+                if (window._emuPatchSceneMap && window.Scene_Map) window._emuPatchSceneMap(window.Scene_Map);
+                if (window._emuPatchImageManager && window.ImageManager) window._emuPatchImageManager(window.ImageManager);
             };
             
             applyEnginePatches();

@@ -298,7 +298,9 @@ final class LocalGameServer: ObservableObject {
         // 若仍然找不到
         guard fileManager.fileExists(atPath: targetFileURL.path) else {
             let lowerPath = sanitizedPath.lowercased()
-            // 容错处理：对于缺失的第三方插件或 JS 脚本，返回 200 OK 空桩，防止 RPG Maker 触发 script onerror 崩溃
+            let lowerExt = targetFileURL.pathExtension.lowercased()
+            
+            // 容错 1：对于缺失的第三方插件或 JS 脚本，返回 200 OK 空桩，防止 RPG Maker 触发 script onerror 崩溃
             if lowerPath.hasSuffix(".js") {
                 let dummyJS = Data("// Emu auto-generated stub for missing script: \(sanitizedPath)\n".utf8)
                 let headers = [
@@ -308,6 +310,51 @@ final class LocalGameServer: ObservableObject {
                     "Cache-Control": "no-cache"
                 ]
                 sendResponse(connection: connection, statusCode: 200, headers: headers, body: dummyJS)
+                return
+            }
+            
+            // 容错 2：对于缺失的图片，返回 1x1 透明 PNG，防止 ImageManager.throwLoadError 中断进图
+            if ["png", "jpg", "jpeg", "gif"].contains(lowerExt) {
+                let transparentPNG = Data([
+                    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D,
+                    0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+                    0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00,
+                    0x0A, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00,
+                    0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49,
+                    0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82
+                ])
+                let headers = [
+                    "Content-Type": "image/png",
+                    "Content-Length": "\(transparentPNG.count)",
+                    "Access-Control-Allow-Origin": "*",
+                    "Cache-Control": "no-cache"
+                ]
+                sendResponse(connection: connection, statusCode: 200, headers: headers, body: transparentPNG)
+                return
+            }
+            
+            // 容错 3：对于缺失的音频，返回空音频，防止 WebAudio 解码报错阻断游戏循环
+            if ["ogg", "m4a", "mp3", "wav"].contains(lowerExt) {
+                let headers = [
+                    "Content-Type": mimeType(for: lowerExt),
+                    "Content-Length": "0",
+                    "Access-Control-Allow-Origin": "*",
+                    "Cache-Control": "no-cache"
+                ]
+                sendResponse(connection: connection, statusCode: 200, headers: headers, body: Data())
+                return
+            }
+            
+            // 容错 4：对于缺失的地图 JSON，返回基础空地图结构，防止 Scene_Map 读图无限挂死
+            if lowerPath.hasPrefix("data/map") && lowerPath.hasSuffix(".json") {
+                let dummyMap = Data("{\"width\":20,\"height\":15,\"data\":[],\"events\":[null],\"scrollType\":0,\"tilesetId\":1,\"bgm\":{\"name\":\"\",\"volume\":90,\"pitch\":100,\"pan\":0},\"bgs\":{\"name\":\"\",\"volume\":90,\"pitch\":100,\"pan\":0},\"autoplayBgm\":false,\"autoplayBgs\":false,\"encounterList\":[]}".utf8)
+                let headers = [
+                    "Content-Type": "application/json; charset=utf-8",
+                    "Content-Length": "\(dummyMap.count)",
+                    "Access-Control-Allow-Origin": "*",
+                    "Cache-Control": "no-cache"
+                ]
+                sendResponse(connection: connection, statusCode: 200, headers: headers, body: dummyMap)
                 return
             }
             
@@ -398,8 +445,13 @@ final class LocalGameServer: ObservableObject {
         default: statusText = "Error"
         }
         
+        var effectiveHeaders = headers
+        if effectiveHeaders["Connection"] == nil && effectiveHeaders["connection"] == nil {
+            effectiveHeaders["Connection"] = "close"
+        }
+        
         var headerString = "HTTP/1.1 \(statusCode) \(statusText)\r\n"
-        for (key, val) in headers {
+        for (key, val) in effectiveHeaders {
             headerString += "\(key): \(val)\r\n"
         }
         headerString += "\r\n"
@@ -407,7 +459,7 @@ final class LocalGameServer: ObservableObject {
         var packet = Data(headerString.utf8)
         packet.append(body)
         
-        connection.send(content: packet, completion: .contentProcessed({ _ in
+        connection.send(content: packet, contentContext: .finalMessage, isComplete: true, completion: .contentProcessed({ _ in
             connection.cancel()
         }))
     }
