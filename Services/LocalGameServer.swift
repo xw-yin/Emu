@@ -311,10 +311,70 @@ final class LocalGameServer: ObservableObject {
             [".rpgsave", ".rpgsave.bak", ".rmmzsave", ".rmmzsave_"].contains { lower.hasSuffix($0) }
     }
 
+    private func fullyResolvedURL(_ url: URL, root: URL) -> URL {
+        var current = url.standardizedFileURL
+        let fm = FileManager.default
+        let rootPath = root.standardizedFileURL.path
+        let basePath = root.resolvingSymlinksInPath().standardizedFileURL.path
+        var hops = 0
+
+        while hops < 16 {
+            if let dest = try? fm.destinationOfSymbolicLink(atPath: current.path) {
+                hops += 1
+                let parent = current.deletingLastPathComponent()
+                current = dest.hasPrefix("/")
+                    ? URL(fileURLWithPath: dest).standardizedFileURL
+                    : URL(fileURLWithPath: dest, relativeTo: parent).standardizedFileURL
+                continue
+            }
+
+            var ancestor = current.deletingLastPathComponent()
+            var suffixComponents: [String] = [current.lastPathComponent]
+            var foundSymlink = false
+
+            while ancestor.path != "/" && !ancestor.path.isEmpty && ancestor.path != rootPath && ancestor.path != basePath {
+                if let dest = try? fm.destinationOfSymbolicLink(atPath: ancestor.path) {
+                    hops += 1
+                    let parent = ancestor.deletingLastPathComponent()
+                    let target = dest.hasPrefix("/")
+                        ? URL(fileURLWithPath: dest).standardizedFileURL
+                        : URL(fileURLWithPath: dest, relativeTo: parent).standardizedFileURL
+                    var rebuilt = target
+                    for comp in suffixComponents {
+                        rebuilt = rebuilt.appendingPathComponent(comp)
+                    }
+                    current = rebuilt.standardizedFileURL
+                    foundSymlink = true
+                    break
+                }
+                suffixComponents.insert(ancestor.lastPathComponent, at: 0)
+                ancestor = ancestor.deletingLastPathComponent()
+            }
+
+            if !foundSymlink {
+                break
+            }
+        }
+
+        var existing = current
+        var nonExistentSuffix: [String] = []
+        while !fm.fileExists(atPath: existing.path) && existing.path != "/" {
+            nonExistentSuffix.insert(existing.lastPathComponent, at: 0)
+            existing = existing.deletingLastPathComponent()
+        }
+
+        var resolved = existing.resolvingSymlinksInPath().standardizedFileURL
+        for comp in nonExistentSuffix {
+            resolved = resolved.appendingPathComponent(comp).standardizedFileURL
+        }
+        return resolved
+    }
+
     private func contained(_ url: URL, in root: URL) -> Bool {
         let base = root.resolvingSymlinksInPath().standardizedFileURL.path
-        let path = url.resolvingSymlinksInPath().standardizedFileURL.path
-        return path.hasPrefix(base + "/")
+        let resolvedPath = fullyResolvedURL(url, root: root).path
+        if base == "/" { return true }
+        return resolvedPath == base || resolvedPath.hasPrefix(base + "/")
     }
 
     private func readSaves() throws -> [String: String] {
