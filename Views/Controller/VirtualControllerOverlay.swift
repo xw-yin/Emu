@@ -205,15 +205,59 @@ struct VirtualControllerOverlay: View {
     
     // MARK: - 发送键盘事件到 WebKit
     private func sendKeyEvent(key: String, code: String, isDown: Bool) {
+        if isDown {
+            let unlockJs = """
+            if (window.WebAudio && window.WebAudio._context && window.WebAudio._context.state === 'suspended') {
+                window.WebAudio._context.resume();
+            }
+            if (window.AudioManager && window.AudioManager._context && window.AudioManager._context.state === 'suspended') {
+                window.AudioManager._context.resume();
+            }
+            """
+            webView?.evaluateJavaScript(unlockJs, completionHandler: nil)
+        }
+        
         let type = isDown ? "keydown" : "keyup"
         let js = """
         (function() {
-            const evt = new KeyboardEvent('\(type)', {
+            function getKeyCode(k, c) {
+                if (c && c.indexOf('Key') === 0 && c.length === 4) {
+                    return c.charCodeAt(3);
+                }
+                if (c && c.indexOf('Digit') === 0 && c.length === 6) {
+                    return c.charCodeAt(5);
+                }
+                if (c && c.indexOf('F') === 0 && c.length <= 3) {
+                    var n = parseInt(c.slice(1));
+                    if (n >= 1 && n <= 12) return 111 + n;
+                }
+                var map = {
+                    'Enter': 13, 'Escape': 27, 'Space': 32, ' ': 32,
+                    'Tab': 9, 'Shift': 16, 'ShiftLeft': 16, 'ShiftRight': 16,
+                    'Control': 17, 'ControlLeft': 17, 'ControlRight': 17,
+                    'Alt': 18, 'AltLeft': 18, 'AltRight': 18,
+                    'Backspace': 8, 'Delete': 46,
+                    'ArrowLeft': 37, 'ArrowUp': 38, 'ArrowRight': 39, 'ArrowDown': 40,
+                    'PageUp': 33, 'PageDown': 34, 'Home': 36, 'End': 35
+                };
+                if (map[c]) return map[c];
+                if (map[k]) return map[k];
+                if (k && k.length === 1) return k.toUpperCase().charCodeAt(0);
+                return 0;
+            }
+            var kc = getKeyCode('\(key)', '\(code)');
+            var evt = new KeyboardEvent('\(type)', {
                 key: '\(key)',
                 code: '\(code)',
+                keyCode: kc,
+                which: kc,
                 bubbles: true,
                 cancelable: true
             });
+            try {
+                Object.defineProperty(evt, 'keyCode', { get: function() { return kc; } });
+                Object.defineProperty(evt, 'which', { get: function() { return kc; } });
+            } catch(e) {}
             window.dispatchEvent(evt);
             document.dispatchEvent(evt);
         })();

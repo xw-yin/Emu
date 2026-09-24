@@ -82,18 +82,29 @@ final class GameLibraryManager: ObservableObject {
     
     /// 获取某个游戏的启动真实 URL（自动处理外部安全作用域权限激活）
     func getGameRootURL(for game: Game) -> URL? {
+        let root: URL?
         if game.isExternalStorage, let bookmarkData = game.securityBookmarkData {
             var isStale = false
             if let resolvedURL = try? URL(resolvingBookmarkData: bookmarkData, options: [], relativeTo: nil, bookmarkDataIsStale: &isStale) {
                 // 激活外部访问权限
                 _ = resolvedURL.startAccessingSecurityScopedResource()
-                return findGameRoot(within: resolvedURL)
+                root = findGameRoot(within: resolvedURL)
+            } else {
+                root = nil
             }
-            return nil
         } else {
             let folder = gamesDirectoryURL.appendingPathComponent(game.rootDirectoryName)
-            return findGameRoot(within: folder)
+            root = findGameRoot(within: folder)
         }
+        
+        if let rootURL = root {
+            // 确保 save 目录预先存在，方便存放与读写存档
+            let saveDir = rootURL.appendingPathComponent("save", isDirectory: true)
+            if !FileManager.default.fileExists(atPath: saveDir.path) {
+                try? FileManager.default.createDirectory(at: saveDir, withIntermediateDirectories: true)
+            }
+        }
+        return root
     }
     
     // MARK: - 私有辅助

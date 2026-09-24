@@ -1,0 +1,194 @@
+name: Build & Release Emu iOS
+
+on:
+  push:
+    tags:
+      - 'v*'
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号 (Version number, 如 1.0.0)'
+        required: true
+        default: '1.0.0'
+      create_release:
+        description: '是否发布到 GitHub Releases'
+        type: boolean
+        required: true
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build & Package IPA
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Select Xcode Version
+        run: |
+          echo "Available Xcode installations:"
+          ls -d /Applications/Xcode* || true
+          
+          if [ -d "/Applications/Xcode_16.2.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_16.2.app
+          elif [ -d "/Applications/Xcode_16.1.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_16.1.app
+          elif [ -d "/Applications/Xcode_16.0.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_16.0.app
+          elif [ -d "/Applications/Xcode_15.4.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_15.4.app
+          else
+            sudo xcode-select -s /Applications/Xcode.app
+          fi
+          
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        run: |
+          brew install xcodegen
+
+      - name: Determine Version & Build Number
+        id: versioning
+        run: |
+          # 1. 提取版本号 (Version)
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ github.event.inputs.version }}" ]]; then
+            RAW_VER="${{ github.event.inputs.version }}"
+          elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            RAW_VER="${GITHUB_REF_NAME#v}"
+          else
+            # 从 project.yml 自动读取预设版本号，默认 1.0.0
+            RAW_VER=$(grep -E 'MARKETING_VERSION:' project.yml | head -n 1 | awk '{print $2}' | tr -d '"')
+            if [ -z "$RAW_VER" ]; then
+              RAW_VER="1.0.0"
+            fi
+          fi
+          
+          # 2. 提取构建号 (Build Number: 基于 GitHub Action Run Number 自动递增)
+          BUILD_NUM="${{ github.run_number }}"
+          
+          # 3. 规范化 "版本号 + Build" 格式
+          FULL_VER="${RAW_VER}+${BUILD_NUM}"
+          TAG_NAME="v${RAW_VER}+b${BUILD_NUM}"
+          RELEASE_TITLE="Emu v${RAW_VER} (Build ${BUILD_NUM})"
+          IPA_NAME="Emu-v${FULL_VER}.ipa"
+          
+          echo "version=${RAW_VER}" >> $GITHUB_OUTPUT
+          echo "build_number=${BUILD_NUM}" >> $GITHUB_OUTPUT
+          echo "full_version=${FULL_VER}" >> $GITHUB_OUTPUT
+          echo "tag_name=${TAG_NAME}" >> $GITHUB_OUTPUT
+          echo "release_title=${RELEASE_TITLE}" >> $GITHUB_OUTPUT
+          echo "ipa_name=${IPA_NAME}" >> $GITHUB_OUTPUT
+          
+          echo "========================================"
+          echo "版本号 (Version):     ${RAW_VER}"
+          echo "构建号 (Build):       ${BUILD_NUM}"
+          echo "完整版本 (Full):      ${FULL_VER}"
+          echo "发布标签 (Tag):       ${TAG_NAME}"
+          echo "安装包名 (IPA):       ${IPA_NAME}"
+          echo "========================================"
+
+      - name: Apply Versioning to project.yml
+        run: |
+          sed -i '' "s/MARKETING_VERSION: .*/MARKETING_VERSION: \"${{ steps.versioning.outputs.version }}\"/" project.yml
+          sed -i '' "s/CURRENT_PROJECT_VERSION: .*/CURRENT_PROJECT_VERSION: ${{ steps.versioning.outputs.build_number }}/" project.yml
+          echo "Updated project.yml with version ${{ steps.versioning.outputs.version }} and build ${{ steps.versioning.outputs.build_number }}"
+
+      - name: Generate Compatible Xcode Project
+        run: |
+          rm -rf Emu.xcodeproj
+          xcodegen generate
+          # 确保兼容 Xcode 15/16 的 objectVersion 56
+          sed -i '' 's/objectVersion = [0-9]*/objectVersion = 56/' Emu.xcodeproj/project.pbxproj || true
+          echo "Project generated with compatible objectVersion 56."
+
+      - name: Build Archive (iOS Release)
+        run: |
+          xcodebuild archive \
+            -project Emu.xcodeproj \
+            -scheme Emu \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/Emu.xcarchive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Package Payload to IPA
+        id: package
+        run: |
+          mkdir -p build/Payload
+          cp -R build/Emu.xcarchive/Products/Applications/Emu.app build/Payload/
+          cd build
+          zip -qr "${{ steps.versioning.outputs.ipa_name }}" Payload
+          cd ..
+          
+          # 压缩调试符号包 dSYM (若存在)
+          if [ -d "build/Emu.xcarchive/dSYMs" ]; then
+            cd build/Emu.xcarchive/dSYMs
+            zip -qr ../../Emu-dSYMs.zip . || true
+            cd ../../..
+          else
+            touch build/Emu-dSYMs.zip
+          fi
+          
+          echo "ipa_path=build/${{ steps.versioning.outputs.ipa_name }}" >> $GITHUB_OUTPUT
+          echo "dsym_path=build/Emu-dSYMs.zip" >> $GITHUB_OUTPUT
+          ls -lh "build/${{ steps.versioning.outputs.ipa_name }}"
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.versioning.outputs.ipa_name }}
+          path: |
+            ${{ steps.package.outputs.ipa_path }}
+            ${{ steps.package.outputs.dsym_path }}
+
+      - name: Create GitHub Release
+        if: |
+          startsWith(github.ref, 'refs/tags/v') ||
+          (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == true) ||
+          github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.versioning.outputs.tag_name }}
+          name: ${{ steps.versioning.outputs.release_title }}
+          body: |
+            ## 🎮 Emu iOS 播放器发布 (${{ steps.versioning.outputs.release_title }})
+            
+            基于 Apple 原生 **SwiftUI + WebKit + Network.framework** 的次世代 RPG Maker MV / MZ 播放器。
+            
+            ### ✨ 本次构建更新内容
+            - **存档读写打通**：完全对接磁盘 `save/` 原生读写，支持已有 PC 存档直读与自动回写。
+            - **背景音乐 (BGM) 修复**：内置 WASM stbvorbis 软解内核，全面支持 iOS 下 Ogg Vorbis 音频解码播放；支持 HTTP 206 分段传输与格式回退。
+            - **全量 26 个英文字母按键支持**：虚拟手柄提供 A~Z 字母网格、数字与自由输入，全面兼容游戏自定义字母快捷键并合规注入 `keyCode`。
+            
+            ### 📌 版本与构建信息
+            - **版本号 (Version)**: `${{ steps.versioning.outputs.version }}`
+            - **构建号 (Build)**: `${{ steps.versioning.outputs.build_number }}`
+            - **完整版本 (Full)**: `${{ steps.versioning.outputs.full_version }}`
+            - **发布标签 (Tag)**: `${{ steps.versioning.outputs.tag_name }}`
+            - **提交哈希 (Commit)**: `${{ github.sha }}`
+            
+            ---
+            
+            ### 📦 推荐安装与侧载方式
+            下载下方 Assets 中的 `.ipa` 即可安装：
+            1. **TrollStore（巨魔商店，免重签，推荐）**
+            2. **LiveContainer（免越狱应用容器）**
+            3. **SideStore / AltStore（个人证书自签名）**
+            4. **全能签 / 轻松签 / 开发者证书自签**
+          files: |
+            ${{ steps.package.outputs.ipa_path }}
+            ${{ steps.package.outputs.dsym_path }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
