@@ -7,19 +7,19 @@ struct GamePlayerView: View {
     let onDismiss: () -> Void
     
     @State private var webView: WKWebView? = nil
-    @State private var isServerReady: Bool = false
+    @ObservedObject private var server = LocalGameServer.shared
     @State private var errorMessage: String? = nil
     
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
             
-            if isServerReady, let url = URL(string: "http://127.0.0.1:\(LocalGameServer.shared.port)/index.html") {
+            if server.isRunning, let url = URL(string: "http://127.0.0.1:\(server.port)/index.html") {
                 // 底层：游戏画面
                 GameWebView(url: url, webView: $webView)
                     .ignoresSafeArea()
                 
-                // 顶层：流体玻璃虚拟控制器浮层
+                // 次层：流体玻璃虚拟控制器浮层
                 VirtualControllerOverlay(gameTitle: game.title, webView: webView) {
                     exitGame()
                 }
@@ -44,17 +44,20 @@ struct GamePlayerView: View {
                         .tint(.cyan)
                 }
             } else {
-                // 加载中光效
-                VStack(spacing: 20) {
+                // 正在拉起服务与等待端口就绪
+                VStack(spacing: 16) {
                     ProgressView()
                         .progressViewStyle(CircularProgressViewStyle(tint: .cyan))
-                        .scaleEffect(1.4)
+                        .scaleEffect(1.2)
                     
-                    Text("正在载入虚拟世界...")
-                        .font(.system(size: 15, weight: .medium, design: .rounded))
+                    Text("正在拉起本地流媒体内核...")
+                        .font(.system(size: 14, weight: .medium, design: .rounded))
                         .foregroundStyle(.white.opacity(0.7))
                 }
             }
+            
+            // 顶层：加载与运行实时日志终端浮层（充当实时极客进度条，可在进入场景后自动折叠）
+            GameLogConsoleOverlay()
         }
         .onAppear {
             launchGame()
@@ -70,17 +73,18 @@ struct GamePlayerView: View {
         UIApplication.shared.isIdleTimerDisabled = true
         
         guard let rootURL = GameLibraryManager.shared.getGameRootURL(for: game) else {
-            errorMessage = "未找到游戏根目录或 index.html"
+            let msg = "未找到游戏根目录或 index.html"
+            errorMessage = msg
+            GameLogManager.shared.log(msg, level: .error)
             return
         }
         
         do {
             try LocalGameServer.shared.start(serving: rootURL)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                self.isServerReady = true
-            }
         } catch {
-            errorMessage = "本地服务启动失败: \(error.localizedDescription)"
+            let msg = "本地服务启动失败: \(error.localizedDescription)"
+            errorMessage = msg
+            GameLogManager.shared.log(msg, level: .error)
         }
     }
     

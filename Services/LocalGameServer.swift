@@ -17,7 +17,7 @@ final class LocalGameServer: ObservableObject {
     private let cacheLock = NSLock()
     
     @Published private(set) var isRunning: Bool = false
-    let port: UInt16 = 8080
+    @Published private(set) var port: UInt16 = 8080
     
     private init() {}
     
@@ -26,29 +26,57 @@ final class LocalGameServer: ObservableObject {
         stop()
         self.rootDirectoryURL = directoryURL
         
+        GameLogManager.shared.reset()
+        GameLogManager.shared.log("正在准备本地环境与资源索引...")
+        
         cacheLock.lock()
         resolvedPathCache.removeAll()
         cacheLock.unlock()
         
+        try startListener(preferredPort: 8080)
+    }
+    
+    private func startListener(preferredPort: UInt16?) throws {
         let tcpOptions = NWProtocolTCP.Options()
         tcpOptions.noDelay = true
         let params = NWParameters(tls: nil, tcp: tcpOptions)
         params.allowLocalEndpointReuse = true
         
-        let nwPort = NWEndpoint.Port(rawValue: port)!
-        let listener = try NWListener(using: params, on: nwPort)
+        let portToUse: NWEndpoint.Port? = preferredPort.flatMap { NWEndpoint.Port(rawValue: $0) }
+        let listener: NWListener
+        if let p = portToUse {
+            listener = try NWListener(using: params, on: p)
+        } else {
+            listener = try NWListener(using: params, on: .any)
+        }
         
         listener.stateUpdateHandler = { [weak self] state in
             DispatchQueue.main.async {
+                guard let self = self else { return }
                 switch state {
                 case .ready:
-                    self?.isRunning = true
-                    print("[LocalServer] 极速本地服务启动成功，监听地址: http://127.0.0.1:\(self?.port ?? 8080)/")
+                    if let realPort = listener.port?.rawValue {
+                        self.port = realPort
+                    }
+                    self.isRunning = true
+                    GameLogManager.shared.log("本地流媒体服务已就绪: 端口 \(self.port)", level: .success)
                 case .failed(let error):
-                    print("[LocalServer] 启动失败: \(error)")
-                    self?.isRunning = false
+                    if preferredPort != nil {
+                        GameLogManager.shared.log("端口 8080 暂不可用 (\(error.localizedDescription))，正在自适应空闲端口...", level: .warning)
+                        self.listener?.cancel()
+                        self.listener = nil
+                        do {
+                            try self.startListener(preferredPort: nil)
+                        } catch {
+                            GameLogManager.shared.log("切换备用端口失败: \(error.localizedDescription)", level: .error)
+                            self.isRunning = false
+                        }
+                    } else {
+                        GameLogManager.shared.log("本地服务启动失败: \(error.localizedDescription)", level: .error)
+                        self.isRunning = false
+                    }
                 case .cancelled:
-                    self?.isRunning = false
+                    self.isRunning = false
                 default:
                     break
                 }
@@ -353,6 +381,7 @@ final class LocalGameServer: ObservableObject {
             
             // 容错 1：对于缺失的第三方插件或 JS 脚本，返回 200 OK 空桩
             if lowerPath.hasSuffix(".js") {
+                GameLogManager.shared.log("缺失脚本已自动注入空桩: \(sanitizedPath)", level: .warning)
                 let dummyJS = Data("// Emu auto-generated stub for missing script: \(sanitizedPath)\n".utf8)
                 let headers = [
                     "Content-Type": "application/javascript; charset=utf-8",
@@ -366,6 +395,7 @@ final class LocalGameServer: ObservableObject {
             
             // 容错 2：对于缺失的图片，返回 1x1 透明 PNG
             if ["png", "jpg", "jpeg", "gif"].contains(lowerExt) {
+                GameLogManager.shared.log("缺失贴图已注入透明桩: \(sanitizedPath)", level: .warning)
                 let transparentPNG = Data([
                     0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D,
                     0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
@@ -386,6 +416,7 @@ final class LocalGameServer: ObservableObject {
             
             // 容错 3：对于缺失的音频，返回空音频
             if ["ogg", "m4a", "mp3", "wav"].contains(lowerExt) {
+                GameLogManager.shared.log("缺失音频已注入静音桩: \(sanitizedPath)", level: .warning)
                 let headers = [
                     "Content-Type": mimeType(for: lowerExt),
                     "Content-Length": "0",
@@ -398,6 +429,7 @@ final class LocalGameServer: ObservableObject {
             
             // 容错 4：对于缺失的地图 JSON，返回基础空地图结构
             if lowerPath.hasPrefix("data/map") && lowerPath.hasSuffix(".json") {
+                GameLogManager.shared.log("缺失地图已生成安全底图: \(sanitizedPath)", level: .warning)
                 let dummyMap = Data("{\"width\":20,\"height\":15,\"data\":[],\"events\":[null],\"scrollType\":0,\"tilesetId\":1,\"bgm\":{\"name\":\"\",\"volume\":90,\"pitch\":100,\"pan\":0},\"bgs\":{\"name\":\"\",\"volume\":90,\"pitch\":100,\"pan\":0},\"autoplayBgm\":false,\"autoplayBgs\":false,\"encounterList\":[]}".utf8)
                 let headers = [
                     "Content-Type": "application/json; charset=utf-8",
@@ -409,11 +441,13 @@ final class LocalGameServer: ObservableObject {
                 return
             }
             
+            GameLogManager.shared.log("未找到文件 (404): \(sanitizedPath)", level: .error)
             sendResponse(connection: connection, statusCode: 404, headers: ["Access-Control-Allow-Origin": "*"], body: Data("Not Found".utf8))
             return
         }
         
         guard let fileData = try? Data(contentsOf: targetFileURL) else {
+            GameLogManager.shared.log("文件读取失败 (500): \(sanitizedPath)", level: .error)
             sendResponse(connection: connection, statusCode: 500, headers: ["Access-Control-Allow-Origin": "*"], body: Data("Read Error".utf8))
             return
         }
@@ -459,6 +493,11 @@ final class LocalGameServer: ObservableObject {
         }
         
         // 5. 普通全量请求 200 OK
+        if sanitizedPath != "index.html" {
+            let kb = max(1, totalCount / 1024)
+            GameLogManager.shared.log("\(sanitizedPath) (\(kb) KB)", level: .success)
+        }
+        
         let headers: [String: String] = [
             "Content-Type": mime,
             "Content-Length": "\(totalCount)",

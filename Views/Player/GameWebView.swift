@@ -18,6 +18,61 @@ struct GameWebView: UIViewRepresentable {
         // MARK: - 注入 0：RPG Maker 核心引擎预拦截与环境安全加固 (atDocumentStart)
         let earlyCompatSource = """
         (function() {
+            // 0. 日志与调试捕获通道：将 JS 控制台错误与场景状态实时投递至原生控制台
+            function postNativeLog(level, message) {
+                try {
+                    if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.emuLog) {
+                        window.webkit.messageHandlers.emuLog.postMessage({ level: level, message: String(message) });
+                    }
+                } catch(e) {}
+            }
+            window._emuPostLog = postNativeLog;
+            
+            window.onerror = function(msg, url, line, col, error) {
+                const file = url ? url.split('/').pop() : 'inline';
+                postNativeLog('error', 'JS 错误: ' + msg + ' (' + file + ':' + line + ')');
+            };
+            
+            const origConsoleError = console.error;
+            console.error = function() {
+                try {
+                    const args = Array.from(arguments).map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
+                    postNativeLog('error', args);
+                } catch(e) {}
+                origConsoleError.apply(console, arguments);
+            };
+            
+            const origConsoleWarn = console.warn;
+            console.warn = function() {
+                try {
+                    const args = Array.from(arguments).map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
+                    if (args.includes('[Emu') || args.includes('Error') || args.includes('fail') || args.includes('warn')) {
+                        postNativeLog('warning', args);
+                    }
+                } catch(e) {}
+                origConsoleWarn.apply(console, arguments);
+            };
+            
+            // 监听场景生命周期，感知标题画面或主地图真正就绪
+            function monitorSceneLifecycle(sceneClass, sceneName) {
+                if (!sceneClass || !sceneClass.prototype) return;
+                const origStart = sceneClass.prototype.start;
+                if (!origStart || origStart._emuLogged) return;
+                const wrapped = function() {
+                    postNativeLog('ready', sceneName);
+                    return origStart.apply(this, arguments);
+                };
+                wrapped._emuLogged = true;
+                sceneClass.prototype.start = wrapped;
+            }
+            
+            const sceneMonitorInterval = setInterval(function() {
+                if (window.Scene_Title) monitorSceneLifecycle(window.Scene_Title, '标题画面 (Scene_Title)');
+                if (window.Scene_Map) monitorSceneLifecycle(window.Scene_Map, '游戏地图 (Scene_Map)');
+                if (window.Scene_Boot) monitorSceneLifecycle(window.Scene_Boot, '启动引擎 (Scene_Boot)');
+                if (window.Scene_Title && window.Scene_Map) clearInterval(sceneMonitorInterval);
+            }, 100);
+            
             // 1. 确保 window.Utils 无论何时被定义或重写，canReadGameFiles 恒为 true，isNwjs 恒为 false
             function patchUtils(u) {
                 if (!u) return;
@@ -801,12 +856,14 @@ struct GameWebView: UIViewRepresentable {
         """
         let engineScript = WKUserScript(source: engineAndStorageCompatSource, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
         configuration.userContentController.addUserScript(engineScript)
+        configuration.userContentController.add(context.coordinator, name: "emuLog")
         
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.backgroundColor = .black
         webView.isOpaque = false
         webView.scrollView.isScrollEnabled = false
         webView.scrollView.bounces = false
+        webView.navigationDelegate = context.coordinator
         
         DispatchQueue.main.async {
             self.webView = webView
@@ -822,4 +879,59 @@ struct GameWebView: UIViewRepresentable {
     }
     
     func updateUIView(_ uiView: WKWebView, context: Context) {}
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+    
+    final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
+        var parent: GameWebView
+        
+        init(_ parent: GameWebView) {
+            self.parent = parent
+        }
+        
+        func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+            if message.name == "emuLog", let dict = message.body as? [String: Any] {
+                let levelStr = dict["level"] as? String ?? "info"
+                let msg = dict["message"] as? String ?? ""
+                
+                if levelStr == "ready" {
+                    GameLogManager.shared.isGameReady = true
+                    GameLogManager.shared.log("🎮 \(msg) 启动成功，进入世界！", level: .success)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                        withAnimation(.easeOut(duration: 0.6)) {
+                            GameLogManager.shared.isVisible = false
+                        }
+                    }
+                } else {
+                    let level: GameLogManager.LogItem.Level
+                    switch levelStr {
+                    case "error": level = .error
+                    case "warning": level = .warning
+                    case "success": level = .success
+                    case "server": level = .server
+                    default: level = .info
+                    }
+                    GameLogManager.shared.log(msg, level: level)
+                }
+            }
+        }
+        
+        func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+            GameLogManager.shared.log("正在请求 index.html 网页入口...", level: .server)
+        }
+        
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            GameLogManager.shared.log("index.html 解析完毕，开始执行游戏脚本链...", level: .success)
+        }
+        
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            GameLogManager.shared.log("网页渲染中断: \(error.localizedDescription)", level: .error)
+        }
+        
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            GameLogManager.shared.log("无法连接本地服务: \(error.localizedDescription)", level: .error)
+        }
+    }
 }

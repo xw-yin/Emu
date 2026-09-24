@@ -23,6 +23,8 @@
 		DCB06C4EEC4878893AB1EE26 /* KeyMappingEditorSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02C87D94B34BC5FEB00E41D6 /* KeyMappingEditorSheet.swift */; };
 		E357AC7D09FE292A0178567F /* VirtualControllerOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = E70079A6BCABDAACE5C4EBF8 /* VirtualControllerOverlay.swift */; };
 		E607B9536AE766B10401B677 /* GlassDpadView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CD35BC26FA2613FAD970FBE /* GlassDpadView.swift */; };
+		4CE2EC78EFD49DA00C5DE503 /* GameLogConsoleOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = F290D921C5121EE3AE258D39 /* GameLogConsoleOverlay.swift */; };
+		EE6DD0B1D841D656C068FA8A /* GameLogManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 667C1E3DE23EFEFA61376EFF /* GameLogManager.swift */; };
 		FC6FAED3DA58EDAFAE21AA87 /* Game.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD4B23AB27467A48751F45A5 /* Game.swift */; };
 /* End PBXBuildFile section */
 
@@ -44,6 +46,8 @@
 		C169FB50FC90D33A6392076A /* EmuApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmuApp.swift; sourceTree = "<group>"; };
 		DA98A584AA72D038459413A0 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		E70079A6BCABDAACE5C4EBF8 /* VirtualControllerOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VirtualControllerOverlay.swift; sourceTree = "<group>"; };
+		667C1E3DE23EFEFA61376EFF /* GameLogManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameLogManager.swift; sourceTree = "<group>"; };
+		F290D921C5121EE3AE258D39 /* GameLogConsoleOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameLogConsoleOverlay.swift; sourceTree = "<group>"; };
 		F3AC188599C023C6CD3C3405 /* GlassActionButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlassActionButton.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -51,6 +55,7 @@
 		0D4846D12F6C05E01B8C7DA1 /* Player */ = {
 			isa = PBXGroup;
 			children = (
+				F290D921C5121EE3AE258D39 /* GameLogConsoleOverlay.swift */,
 				A2A3ADFEAA5C39EEAFE91D33 /* GamePlayerView.swift */,
 				159507E151539B1D2B0E2370 /* GameWebView.swift */,
 			);
@@ -121,6 +126,7 @@
 			isa = PBXGroup;
 			children = (
 				7F19468944925D4EB23166F1 /* GameLibraryManager.swift */,
+				667C1E3DE23EFEFA61376EFF /* GameLogManager.swift */,
 				26736BE0DE2061E77005ABF0 /* HapticManager.swift */,
 				41EBED2AFCEF768FCE02F203 /* KeyMappingManager.swift */,
 				58F112629507BA8A13018595 /* LocalGameServer.swift */,
@@ -218,6 +224,8 @@
 				DCB06C4EEC4878893AB1EE26 /* KeyMappingEditorSheet.swift in Sources */,
 				61E837DDF99FD4F1D1219F25 /* KeyMappingManager.swift in Sources */,
 				4E31DD8BCEDD6719AC695999 /* LocalGameServer.swift in Sources */,
+				4CE2EC78EFD49DA00C5DE503 /* GameLogConsoleOverlay.swift in Sources */,
+				EE6DD0B1D841D656C068FA8A /* GameLogManager.swift in Sources */,
 				E357AC7D09FE292A0178567F /* VirtualControllerOverlay.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
