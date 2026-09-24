@@ -30,80 +30,25 @@ struct VirtualControllerOverlay: View {
                                 .clipShape(Circle())
                         }
                         
-                        Spacer()
+                        Spacer(minLength: 8)
                         
-                        // 灵动胶囊工具栏
-                        HStack(spacing: 12) {
-                            // 虚拟按键显隐切换
-                            Button(action: {
-                                HapticManager.shared.buttonPress()
-                                withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-                                    isControllerHidden.toggle()
-                                }
-                            }) {
-                                HStack(spacing: 4) {
-                                    Image(systemName: isControllerHidden ? "eye.slash.fill" : "eye.fill")
-                                        .font(.system(size: 13, weight: .bold))
-                                    Text(isControllerHidden ? "显示按键" : "隐藏按键")
-                                        .font(.system(size: 12, weight: .bold, design: .rounded))
-                                }
-                                .foregroundStyle(isControllerHidden ? Color.yellow : Color.white.opacity(0.85))
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 6)
-                                .background(.ultraThinMaterial)
-                                .clipShape(Capsule())
-                            }
+                        // 灵动胶囊工具栏：宽度充足时完整并列，宽度受限/横屏一行展示不下时支持丝滑横向滑动
+                        ViewThatFits(in: .horizontal) {
+                            toolbarButtons
+                                .padding(6)
+                                .liquidGlass(cornerRadius: 30, strokeOpacity: 0.2)
                             
-                            // 自定义按键与映射配置入口
-                            Button(action: {
-                                HapticManager.shared.buttonPress()
-                                showKeymapSheet = true
-                            }) {
-                                HStack(spacing: 5) {
-                                    Image(systemName: "gamecontroller.fill")
-                                        .font(.system(size: 13, weight: .bold))
-                                    Text("按键定制")
-                                        .font(.system(size: 12, weight: .bold, design: .rounded))
-                                }
-                                .foregroundStyle(Color.cyan)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 6)
-                                .background(.ultraThinMaterial)
-                                .clipShape(Capsule())
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                toolbarButtons
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 6)
                             }
-                            
-                            // 2X 快进按键
-                            Button(action: toggleFastForward) {
-                                HStack(spacing: 4) {
-                                    Image(systemName: isFastForwardActive ? "forward.fill" : "forward")
-                                    Text(isFastForwardActive ? "2.0x" : "1.0x")
-                                        .font(.system(size: 12, weight: .bold, design: .monospaced))
-                                }
-                                .foregroundStyle(isFastForwardActive ? Color.orange : Color.white.opacity(0.8))
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 6)
-                                .background(.ultraThinMaterial)
-                                .clipShape(Capsule())
-                            }
-                            
-                            // 透明度调节
-                            Menu {
-                                Button("清晰 (100%)") { controllerOpacity = 1.0 }
-                                Button("沉浸 (70%)") { controllerOpacity = 0.70 }
-                                Button("幽灵 (40%)") { controllerOpacity = 0.40 }
-                            } label: {
-                                Image(systemName: "slider.horizontal.below.square.and.square.filled")
-                                    .font(.system(size: 14, weight: .semibold))
-                                    .foregroundStyle(.white.opacity(0.85))
-                                    .frame(width: 36, height: 36)
-                                    .background(.ultraThinMaterial)
-                                    .clipShape(Circle())
-                            }
+                            .scrollBounceBehavior(.basedOnSize)
+                            .frame(height: 48)
+                            .liquidGlass(cornerRadius: 30, strokeOpacity: 0.2)
                         }
-                        .padding(6)
-                        .liquidGlass(cornerRadius: 30, strokeOpacity: 0.2)
                     }
-                    .padding(.horizontal, 24)
+                    .padding(.horizontal, 20)
                     .padding(.top, 10)
                     
                     if isLayoutEditMode {
@@ -286,6 +231,78 @@ struct VirtualControllerOverlay: View {
         })();
         """
         webView?.evaluateJavaScript(js, completionHandler: nil)
+    }
+    // MARK: - 顶部工具栏胶囊内容
+    @ViewBuilder
+    private var toolbarButtons: some View {
+        HStack(spacing: 8) {
+            // 虚拟按键显隐切换
+            Button(action: {
+                HapticManager.shared.buttonPress()
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                    isControllerHidden.toggle()
+                }
+            }) {
+                HStack(spacing: 4) {
+                    Image(systemName: isControllerHidden ? "eye.slash.fill" : "eye.fill")
+                        .font(.system(size: 13, weight: .bold))
+                    Text(isControllerHidden ? "显示按键" : "隐藏按键")
+                        .font(.system(size: 12, weight: .bold, design: .rounded))
+                }
+                .foregroundStyle(isControllerHidden ? Color.yellow : Color.white.opacity(0.85))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(.ultraThinMaterial)
+                .clipShape(Capsule())
+            }
+            
+            // 自定义按键与映射配置入口
+            Button(action: {
+                HapticManager.shared.buttonPress()
+                showKeymapSheet = true
+            }) {
+                HStack(spacing: 5) {
+                    Image(systemName: "gamecontroller.fill")
+                        .font(.system(size: 13, weight: .bold))
+                    Text("按键定制")
+                        .font(.system(size: 12, weight: .bold, design: .rounded))
+                }
+                .foregroundStyle(Color.cyan)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(.ultraThinMaterial)
+                .clipShape(Capsule())
+            }
+            
+            // 2X 快进按键
+            Button(action: toggleFastForward) {
+                HStack(spacing: 4) {
+                    Image(systemName: isFastForwardActive ? "forward.fill" : "forward")
+                    Text(isFastForwardActive ? "2.0x" : "1.0x")
+                        .font(.system(size: 12, weight: .bold, design: .monospaced))
+                }
+                .foregroundStyle(isFastForwardActive ? Color.orange : Color.white.opacity(0.8))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(.ultraThinMaterial)
+                .clipShape(Capsule())
+            }
+            
+            // 透明度调节
+            Menu {
+                Button("清晰 (100%)") { controllerOpacity = 1.0 }
+                Button("沉浸 (70%)") { controllerOpacity = 0.70 }
+                Button("幽灵 (40%)") { controllerOpacity = 0.40 }
+            } label: {
+                Image(systemName: "slider.horizontal.below.square.and.square.filled")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.85))
+                    .frame(width: 36, height: 36)
+                    .background(.ultraThinMaterial)
+                    .clipShape(Circle())
+            }
+        }
+        .fixedSize(horizontal: true, vertical: false)
     }
     
     // MARK: - 游戏倍速快进
