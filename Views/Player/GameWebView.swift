@@ -80,7 +80,16 @@ struct GameWebView: UIViewRepresentable {
             const sceneMonitorInterval = setInterval(function() {
                 if (window.Scene_Title) monitorSceneLifecycle(window.Scene_Title, '标题画面 (Scene_Title)');
                 if (window.Scene_Map) monitorSceneLifecycle(window.Scene_Map, '游戏地图 (Scene_Map)');
-                if (window.Scene_Boot) monitorSceneLifecycle(window.Scene_Boot, '启动引擎 (Scene_Boot)');
+                if (window.Scene_Boot && !window.Scene_Boot._emuBootLogged && window.Scene_Boot.prototype) {
+                    window.Scene_Boot._emuBootLogged = true;
+                    const origBootStart = window.Scene_Boot.prototype.start;
+                    if (origBootStart) {
+                        window.Scene_Boot.prototype.start = function() {
+                            postNativeLog('info', '🚀 引擎开始初始化 (Scene_Boot)');
+                            return origBootStart.apply(this, arguments);
+                        };
+                    }
+                }
                 if (window.Scene_Title && window.Scene_Map) clearInterval(sceneMonitorInterval);
             }, 50);
             
@@ -427,21 +436,6 @@ struct GameWebView: UIViewRepresentable {
                     .catch(() => {});
             } catch(e) {}
             
-            // 同步 HTTP 请求辅助工具 (专为 MV 同步存档读写定制)
-            function httpSync(method, url, data) {
-                try {
-                    const xhr = new XMLHttpRequest();
-                    xhr.open(method, url, false);
-                    if (data) {
-                        xhr.setRequestHeader('Content-Type', 'text/plain; charset=utf-8');
-                    }
-                    xhr.send(data || null);
-                    return { status: xhr.status, text: xhr.responseText };
-                } catch(e) {
-                    return { status: 0, text: '' };
-                }
-            }
-            
             const applyEnginePatches = () => {
                 // 1. 核心运行环境安全加固：彻底禁用 local file 校验、插件缺失中断与纠正 NW.js 环境假阳性
                 if (window.Utils) {
@@ -465,13 +459,22 @@ struct GameWebView: UIViewRepresentable {
                 if (window.AudioManager) {
                     window.AudioManager._canPlayOgg = true;
                     window.AudioManager.audioFileExt = function() { return '.ogg'; };
-                    // 覆写 checkErrors 与 checkWebAudioError，防止无害的音频告警中断整局游戏循环
                     window.AudioManager.checkErrors = function() {};
                     window.AudioManager.checkWebAudioError = function() {};
                 }
                 
-                // 2. 存档引擎 StorageManager 磁盘挂载（注意：绝不强改 isLocalMode，避免引发第三方插件如 DrillUp 误判）
-                if (window.StorageManager) {
+                // 3. 字体加载免卡死保障：消除 GameFont 在 iOS WebKit 缺失引发的 20~60 秒无限阻塞
+                if (window.Graphics) {
+                    window.Graphics.isFontLoaded = function() { return true; };
+                }
+                if (window.Scene_Boot && window.Scene_Boot.prototype) {
+                    window.Scene_Boot.prototype.isGameFontLoaded = function() { return true; };
+                }
+                
+                // 4. 存档引擎 StorageManager 磁盘挂载（纯内存高速秒开 + 异步入盘，杜绝任何同步 XHR 挂死主线程）
+                if (window.StorageManager && !window.StorageManager._emuHooked) {
+                    window.StorageManager._emuHooked = true;
+                    
                     // --- MV 模式 Hook ---
                     if (window.StorageManager.localFilePath) {
                         window.StorageManager.localFileDirectoryPath = function() {
@@ -493,11 +496,9 @@ struct GameWebView: UIViewRepresentable {
                         window.StorageManager.localFileExists = function(savefileId) {
                             const path = this.localFilePath(savefileId);
                             const fileName = path.split('/').pop();
-                            if (window._emuSaveCache && (window._emuSaveCache[fileName] || window._emuSaveCache[path])) {
+                            if (window._emuSaveCache && (window._emuSaveCache[fileName] !== undefined || window._emuSaveCache[path] !== undefined)) {
                                 return true;
                             }
-                            const res = httpSync('HEAD', '/' + path);
-                            if (res.status >= 200 && res.status < 300) return true;
                             return this.webStorageExists ? this.webStorageExists(savefileId) : false;
                         };
                         
@@ -505,18 +506,8 @@ struct GameWebView: UIViewRepresentable {
                             const path = this.localFilePath(savefileId);
                             const fileName = path.split('/').pop();
                             
-                            // 1. 优先命中内存高速缓存 (0 毫秒秒出，彻底消除主线程挂死)
+                            // 100% 内存高速直读（0 毫秒秒出）
                             let content = (window._emuSaveCache && (window._emuSaveCache[fileName] || window._emuSaveCache[path])) || null;
-                            
-                            // 2. 缓存未命中时走同步请求兜底
-                            if (!content) {
-                                const res = httpSync('GET', '/' + path);
-                                if (res.status >= 200 && res.status < 300 && res.text) {
-                                    content = res.text;
-                                    window._emuSaveCache[fileName] = content;
-                                }
-                            }
-                            
                             if (content) {
                                 const text = content.trim();
                                 if (text.startsWith('{') || text.startsWith('[')) {
@@ -555,7 +546,14 @@ struct GameWebView: UIViewRepresentable {
                         
                         window.StorageManager.removeLocalFile = function(savefileId) {
                             const path = this.localFilePath(savefileId);
-                            httpSync('DELETE', '/' + path);
+                            const fileName = path.split('/').pop();
+                            if (window._emuSaveCache) {
+                                delete window._emuSaveCache[fileName];
+                                delete window._emuSaveCache[path];
+                            }
+                            try {
+                                fetch('/' + path, { method: 'DELETE' }).catch(() => {});
+                            } catch(e) {}
                             try {
                                 if (this.removeWebStorage) this.removeWebStorage(savefileId);
                             } catch(e) {}
