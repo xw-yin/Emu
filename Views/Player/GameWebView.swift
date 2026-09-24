@@ -250,7 +250,7 @@ struct GameWebView: UIViewRepresentable {
                 });
             } catch(e) {}
 
-            // 7. 场景切换安全加固：防止读档进入 Scene_Map 时因黑屏遮罩未清除导致画面卡死假象
+            // 7. 场景切换安全加固：防止读档进入 Scene_Map 时因黑屏遮罩未清除或资源加载阻断导致画面卡死假象
             function patchSceneMap(sm) {
                 if (!sm || !sm.prototype) return;
                 try {
@@ -268,6 +268,35 @@ struct GameWebView: UIViewRepresentable {
                         };
                         wrappedStart._emuWrapped = true;
                         sm.prototype.start = wrappedStart;
+                    }
+                    
+                    let mapReadyWaitCount = 0;
+                    const origIsReady = sm.prototype.isReady;
+                    if (origIsReady && !origIsReady._emuWrapped) {
+                        const wrappedMapIsReady = function() {
+                            const ready = origIsReady.call(this);
+                            if (ready) {
+                                mapReadyWaitCount = 0;
+                                return true;
+                            }
+                            mapReadyWaitCount++;
+                            // 若地图等待就绪超过 90 帧 (~1.5 秒)，强制补全空地图并启动，彻底杜绝黑屏死锁
+                            if (mapReadyWaitCount > 90) {
+                                console.warn('[Emu] Scene_Map 就绪超时，强制启动地图');
+                                if (!this._mapLoaded) {
+                                    if (!window.$dataMap) {
+                                        window.$dataMap = { width: 20, height: 15, data: [], events: [null], scrollType: 0, tilesetId: 1 };
+                                    }
+                                    try { this.onMapLoaded(); } catch(e) {}
+                                    this._mapLoaded = true;
+                                }
+                                mapReadyWaitCount = 0;
+                                return true;
+                            }
+                            return false;
+                        };
+                        wrappedMapIsReady._emuWrapped = true;
+                        sm.prototype.isReady = wrappedMapIsReady;
                     }
                 } catch(e) {}
             }
@@ -295,8 +324,31 @@ struct GameWebView: UIViewRepresentable {
                         if (bitmap) {
                             bitmap._hasError = false;
                             bitmap._isLoading = false;
+                            bitmap._loadingState = 'loaded';
                         }
                     };
+                    
+                    let isReadyWaitCount = 0;
+                    const origIsReady = im.isReady;
+                    if (origIsReady && !origIsReady._emuWrapped) {
+                        const wrappedIsReady = function() {
+                            const ready = origIsReady.call(this);
+                            if (ready) {
+                                isReadyWaitCount = 0;
+                                return true;
+                            }
+                            isReadyWaitCount++;
+                            // 保护：等待图片资源就绪若超过 90 帧 (~1.5 秒)，强制放行进图
+                            if (isReadyWaitCount > 90) {
+                                console.warn('[Emu] 图片加载等待超时，强制放行启动');
+                                isReadyWaitCount = 0;
+                                return true;
+                            }
+                            return false;
+                        };
+                        wrappedIsReady._emuWrapped = true;
+                        im.isReady = wrappedIsReady;
+                    }
                 } catch(e) {}
             }
             let _ImageManager = window.ImageManager;
@@ -487,11 +539,26 @@ struct GameWebView: UIViewRepresentable {
             style.innerHTML = 'body, html { overflow: hidden !important; margin: 0 !important; background: black !important; }';
             document.head?.appendChild(style);
             
-            // 同步 HTTP 请求辅助工具 (专为 MV 同步存档读写定制)
+            // 全局内存存档秒开预热缓存 (彻底避免读取存档时因网络阻塞死锁)
+            window._emuSaveCache = window._emuSaveCache || {};
+            try {
+                fetch('/_emu/saves')
+                    .then(r => r.json())
+                    .then(saves => {
+                        for (const k in saves) {
+                            window._emuSaveCache[k] = saves[k];
+                        }
+                        console.log('[Emu Save] 成功预热内存存档缓存，加载存档数量:', Object.keys(window._emuSaveCache).length);
+                    })
+                    .catch(() => {});
+            } catch(e) {}
+            
+            // 同步 HTTP 请求辅助工具 (专为 MV 同步存档读写定制，附带 1.5 秒硬超时防御)
             function httpSync(method, url, data) {
                 try {
                     const xhr = new XMLHttpRequest();
                     xhr.open(method, url, false);
+                    xhr.timeout = 1500;
                     if (data) {
                         xhr.setRequestHeader('Content-Type', 'text/plain; charset=utf-8');
                     }
@@ -552,6 +619,10 @@ struct GameWebView: UIViewRepresentable {
                         
                         window.StorageManager.localFileExists = function(savefileId) {
                             const path = this.localFilePath(savefileId);
+                            const fileName = path.split('/').pop();
+                            if (window._emuSaveCache && (window._emuSaveCache[fileName] || window._emuSaveCache[path])) {
+                                return true;
+                            }
                             const res = httpSync('HEAD', '/' + path);
                             if (res.status >= 200 && res.status < 300) return true;
                             return this.webStorageExists ? this.webStorageExists(savefileId) : false;
@@ -559,10 +630,22 @@ struct GameWebView: UIViewRepresentable {
                         
                         window.StorageManager.loadFromLocalFile = function(savefileId) {
                             const path = this.localFilePath(savefileId);
-                            const res = httpSync('GET', '/' + path);
-                            if (res.status >= 200 && res.status < 300 && res.text) {
-                                const text = res.text.trim();
-                                // 极速快慢路径优化：若本身就是明文 JSON (以 { 或 [ 开头)，直接返回，杜绝 LZString 解压缩百万级字符锁死主线程
+                            const fileName = path.split('/').pop();
+                            
+                            // 1. 优先命中内存高速缓存 (0 毫秒秒出，彻底消除主线程挂死)
+                            let content = (window._emuSaveCache && (window._emuSaveCache[fileName] || window._emuSaveCache[path])) || null;
+                            
+                            // 2. 缓存未命中时走同步请求兜底
+                            if (!content) {
+                                const res = httpSync('GET', '/' + path);
+                                if (res.status >= 200 && res.status < 300 && res.text) {
+                                    content = res.text;
+                                    window._emuSaveCache[fileName] = content;
+                                }
+                            }
+                            
+                            if (content) {
+                                const text = content.trim();
                                 if (text.startsWith('{') || text.startsWith('[')) {
                                     return text;
                                 }
@@ -581,11 +664,17 @@ struct GameWebView: UIViewRepresentable {
                         
                         window.StorageManager.saveToLocalFile = function(savefileId, json) {
                             const path = this.localFilePath(savefileId);
+                            const fileName = path.split('/').pop();
                             let data = json;
                             if (window.LZString) {
                                 data = window.LZString.compressToBase64(json);
                             }
-                            httpSync('PUT', '/' + path, data);
+                            // 内存秒存
+                            window._emuSaveCache[fileName] = data;
+                            // 异步刷入磁盘
+                            try {
+                                fetch('/' + path, { method: 'PUT', body: data }).catch(() => {});
+                            } catch(e) {}
                             try {
                                 if (this.saveToWebStorage) this.saveToWebStorage(savefileId, json);
                             } catch(e) {}

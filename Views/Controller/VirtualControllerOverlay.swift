@@ -12,6 +12,7 @@ struct VirtualControllerOverlay: View {
     @State private var showKeymapSheet: Bool = false
     @State private var isLayoutEditMode: Bool = false
     @State private var isFastForwardActive: Bool = false
+    @AppStorage("isVirtualControllerHidden") private var isControllerHidden: Bool = false
     
     var body: some View {
         GeometryReader { proxy in
@@ -32,7 +33,27 @@ struct VirtualControllerOverlay: View {
                         Spacer()
                         
                         // 灵动胶囊工具栏
-                        HStack(spacing: 14) {
+                        HStack(spacing: 12) {
+                            // 虚拟按键显隐切换
+                            Button(action: {
+                                HapticManager.shared.buttonPress()
+                                withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                                    isControllerHidden.toggle()
+                                }
+                            }) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: isControllerHidden ? "eye.slash.fill" : "eye.fill")
+                                        .font(.system(size: 13, weight: .bold))
+                                    Text(isControllerHidden ? "显示按键" : "隐藏按键")
+                                        .font(.system(size: 12, weight: .bold, design: .rounded))
+                                }
+                                .foregroundStyle(isControllerHidden ? Color.yellow : Color.white.opacity(0.85))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(.ultraThinMaterial)
+                                .clipShape(Capsule())
+                            }
+                            
                             // 自定义按键与映射配置入口
                             Button(action: {
                                 HapticManager.shared.buttonPress()
@@ -135,13 +156,15 @@ struct VirtualControllerOverlay: View {
                         Spacer()
                     }
                 }
-                .opacity(controllerOpacity)
+                .opacity(isControllerHidden ? 0 : controllerOpacity)
+                .allowsHitTesting(!isControllerHidden)
                 
                 // 右下角：动态自定义动作按键群 (根据坐标定位)
                 ForEach($profile.actionButtons) { $btn in
                     renderDraggableButton(btn: $btn, screenSize: proxy.size)
                 }
-                .opacity(controllerOpacity)
+                .opacity(isControllerHidden ? 0 : controllerOpacity)
+                .allowsHitTesting(!isControllerHidden)
             }
         }
         .onAppear {
