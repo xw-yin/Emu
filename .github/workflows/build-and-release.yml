@@ -55,6 +55,14 @@ jobs:
         run: |
           brew install xcodegen
 
+      - name: Check game runtime regressions
+        run: node --test Tests/game-runtime.test.cjs Tests/game-audio.test.cjs
+
+      - name: Check native game server
+        run: |
+          swiftc -parse-as-library Services/LocalGameServer.swift Services/EmuScriptAssets.swift Tests/LocalGameServerChecks.swift -o "$RUNNER_TEMP/emu-server-checks"
+          "$RUNNER_TEMP/emu-server-checks"
+
       - name: Determine Version & Build Number
         id: versioning
         run: |

@@ -74,6 +74,7 @@ final class GameLogManager: ObservableObject {
                 self.loadedCount += 1
             } else if level == .error {
                 self.errorCount += 1
+                self.isVisible = true
             }
         }
     }

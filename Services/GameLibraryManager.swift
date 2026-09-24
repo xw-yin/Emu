@@ -1,5 +1,6 @@
 import Foundation
 import UIKit
+import Combine
 
 /// 游戏库管理器：统一调度沙盒内置游戏与外部“下载”目录零拷贝直读游戏
 final class GameLibraryManager: ObservableObject {
@@ -9,6 +10,7 @@ final class GameLibraryManager: ObservableObject {
     
     private let gamesDirectoryName = "Games"
     private let externalGamesKey = "com.emu.external_games_v1"
+    private var activeSecurityScopedURL: URL?
     
     private var gamesDirectoryURL: URL {
         let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -82,12 +84,15 @@ final class GameLibraryManager: ObservableObject {
     
     /// 获取某个游戏的启动真实 URL（自动处理外部安全作用域权限激活）
     func getGameRootURL(for game: Game) -> URL? {
+        releaseGameAccess()
         let root: URL?
         if game.isExternalStorage, let bookmarkData = game.securityBookmarkData {
             var isStale = false
             if let resolvedURL = try? URL(resolvingBookmarkData: bookmarkData, options: [], relativeTo: nil, bookmarkDataIsStale: &isStale) {
                 // 激活外部访问权限
-                _ = resolvedURL.startAccessingSecurityScopedResource()
+                if resolvedURL.startAccessingSecurityScopedResource() {
+                    activeSecurityScopedURL = resolvedURL
+                }
                 root = findGameRoot(within: resolvedURL)
             } else {
                 root = nil
@@ -105,6 +110,11 @@ final class GameLibraryManager: ObservableObject {
             }
         }
         return root
+    }
+
+    func releaseGameAccess() {
+        activeSecurityScopedURL?.stopAccessingSecurityScopedResource()
+        activeSecurityScopedURL = nil
     }
     
     // MARK: - 私有辅助

@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        A01000000000000000000001 /* GameRuntime.js in Resources */ = {isa = PBXBuildFile; fileRef = A01000000000000000000002 /* GameRuntime.js */; };
+        A01000000000000000000003 /* EmuScriptAssets.swift in Sources */ = {isa = PBXBuildFile; fileRef = A01000000000000000000004 /* EmuScriptAssets.swift */; };
 		1C7DA552BC1FC2C168F205BA /* GameCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1864D879CB1A49038625E2D7 /* GameCardView.swift */; };
 		20D9B6B580883215B3BA2B28 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = DA98A584AA72D038459413A0 /* Assets.xcassets */; };
 		3A3451C3F18879913B889334 /* GamePlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2A3ADFEAA5C39EEAFE91D33 /* GamePlayerView.swift */; };
@@ -29,6 +31,8 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+        A01000000000000000000002 /* GameRuntime.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = GameRuntime.js; sourceTree = "<group>"; };
+        A01000000000000000000004 /* EmuScriptAssets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmuScriptAssets.swift; sourceTree = "<group>"; };
 		02C87D94B34BC5FEB00E41D6 /* KeyMappingEditorSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyMappingEditorSheet.swift; sourceTree = "<group>"; };
 		096225C309A36E7F1D052E84 /* KeyMapping.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyMapping.swift; sourceTree = "<group>"; };
 		159507E151539B1D2B0E2370 /* GameWebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameWebView.swift; sourceTree = "<group>"; };
@@ -123,8 +127,10 @@
 			sourceTree = "<group>";
 		};
 		834F553843CC9E49B92AAB98 /* Services */ = {
-			isa = PBXGroup;
-			children = (
+            isa = PBXGroup;
+            children = (
+                A01000000000000000000002 /* GameRuntime.js */,
+                A01000000000000000000004 /* EmuScriptAssets.swift */,
 				7F19468944925D4EB23166F1 /* GameLibraryManager.swift */,
 				667C1E3DE23EFEFA61376EFF /* GameLogManager.swift */,
 				26736BE0DE2061E77005ABF0 /* HapticManager.swift */,
@@ -198,6 +204,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+                A01000000000000000000001 /* GameRuntime.js in Resources */,
 				20D9B6B580883215B3BA2B28 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -209,6 +216,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+                A01000000000000000000003 /* EmuScriptAssets.swift in Sources */,
 				A91E8D3586BE5C0CAF262DFB /* EmuApp.swift in Sources */,
 				FC6FAED3DA58EDAFAE21AA87 /* Game.swift in Sources */,
 				1C7DA552BC1FC2C168F205BA /* GameCardView.swift in Sources */,

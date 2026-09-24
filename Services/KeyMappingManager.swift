@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 
 /// 按键配置文件持久化服务
 final class KeyMappingManager: ObservableObject {

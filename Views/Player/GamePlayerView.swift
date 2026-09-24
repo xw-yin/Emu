@@ -9,6 +9,7 @@ struct GamePlayerView: View {
     @State private var webView: WKWebView? = nil
     @ObservedObject private var server = LocalGameServer.shared
     @State private var errorMessage: String? = nil
+    @State private var didCleanup = false
     
     var body: some View {
         ZStack {
@@ -65,10 +66,15 @@ struct GamePlayerView: View {
         .onDisappear {
             cleanup()
         }
+        .onReceive(server.$lastError) { message in
+            if let message = message { errorMessage = message }
+        }
         .statusBarHidden(true)
     }
     
     private func launchGame() {
+        didCleanup = false
+        errorMessage = nil
         // 保持屏幕常亮
         UIApplication.shared.isIdleTimerDisabled = true
         
@@ -94,7 +100,10 @@ struct GamePlayerView: View {
     }
     
     private func cleanup() {
+        guard !didCleanup else { return }
+        didCleanup = true
         LocalGameServer.shared.stop()
+        GameLibraryManager.shared.releaseGameAccess()
         UIApplication.shared.isIdleTimerDisabled = false
     }
 }

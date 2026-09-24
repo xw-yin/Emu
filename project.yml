@@ -13,6 +13,10 @@ targets:
       - path: EmuApp.swift
       - path: Models
       - path: Services
+        excludes:
+          - GameRuntime.js
+      - path: Services/GameRuntime.js
+        buildPhase: resources
       - path: Views
       - path: Assets.xcassets
     settings:

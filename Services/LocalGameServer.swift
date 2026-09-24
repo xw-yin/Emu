@@ -1,5 +1,7 @@
 import Foundation
 import Network
+import CryptoKit
+import Combine
 
 /// 纯原生 Swift 实现的高性能本地 HTTP 服务器（基于 Network.framework，0 外部第三方依赖）
 /// 专为解决 iOS WKWebView 运行 RPG Maker MV/MZ 时的 CORS 跨域、静态资源极速秒开、
@@ -9,6 +11,8 @@ final class LocalGameServer: ObservableObject {
     
     private var listener: NWListener?
     private var rootDirectoryURL: URL?
+    private var sessionID = UUID()
+    private var connections: [ObjectIdentifier: NWConnection] = [:]
     // 使用高速串行队列（遵循 Apple Network.framework 对单连接串行化的严格要求，杜绝死锁与丢包）
     private let queue = DispatchQueue(label: "com.emu.localserver", qos: .userInteractive)
     
@@ -18,13 +22,15 @@ final class LocalGameServer: ObservableObject {
     
     @Published private(set) var isRunning: Bool = false
     @Published private(set) var port: UInt16 = 8080
+    @Published private(set) var lastError: String?
     
     private init() {}
     
     /// 启动本地服务器并指定根目录
     func start(serving directoryURL: URL) throws {
         stop()
-        self.rootDirectoryURL = directoryURL
+        lastError = nil
+        queue.sync { self.rootDirectoryURL = directoryURL }
         
         GameLogManager.shared.reset()
         GameLogManager.shared.log("正在准备本地环境与资源索引...")
@@ -50,9 +56,9 @@ final class LocalGameServer: ObservableObject {
             listener = try NWListener(using: params, on: .any)
         }
         
-        listener.stateUpdateHandler = { [weak self] state in
+        listener.stateUpdateHandler = { [weak self, weak listener] state in
             DispatchQueue.main.async {
-                guard let self = self else { return }
+                guard let self = self, let listener = listener, self.listener === listener else { return }
                 switch state {
                 case .ready:
                     if let realPort = listener.port?.rawValue {
@@ -69,10 +75,12 @@ final class LocalGameServer: ObservableObject {
                             try self.startListener(preferredPort: nil)
                         } catch {
                             GameLogManager.shared.log("切换备用端口失败: \(error.localizedDescription)", level: .error)
+                            self.lastError = error.localizedDescription
                             self.isRunning = false
                         }
                     } else {
                         GameLogManager.shared.log("本地服务启动失败: \(error.localizedDescription)", level: .error)
+                        self.lastError = error.localizedDescription
                         self.isRunning = false
                     }
                 case .cancelled:
@@ -83,18 +91,29 @@ final class LocalGameServer: ObservableObject {
             }
         }
         
+        let session = queue.sync { sessionID }
         listener.newConnectionHandler = { [weak self] connection in
-            self?.handleConnection(connection)
+            guard let self = self, self.sessionID == session else {
+                connection.cancel()
+                return
+            }
+            self.handleConnection(connection)
         }
         
-        listener.start(queue: queue)
         self.listener = listener
+        listener.start(queue: queue)
     }
     
     func stop() {
         listener?.cancel()
         listener = nil
         isRunning = false
+        queue.sync {
+            sessionID = UUID()
+            rootDirectoryURL = nil
+            for connection in connections.values { connection.cancel() }
+            connections.removeAll()
+        }
         cacheLock.lock()
         resolvedPathCache.removeAll()
         cacheLock.unlock()
@@ -102,6 +121,15 @@ final class LocalGameServer: ObservableObject {
     
     // MARK: - 连接接入与 HTTP 请求解析
     private func handleConnection(_ connection: NWConnection) {
+        let key = ObjectIdentifier(connection)
+        connections[key] = connection
+        connection.stateUpdateHandler = { [weak self, weak connection] state in
+            if case .cancelled = state { self?.connections.removeValue(forKey: key) }
+            if case .failed = state {
+                self?.connections.removeValue(forKey: key)
+                connection?.cancel()
+            }
+        }
         connection.start(queue: queue)
         readHTTPRequest(connection: connection, accumulatedData: Data())
     }
@@ -167,13 +195,22 @@ final class LocalGameServer: ObservableObject {
                 }
                 
                 // 校验 Content-Length 是否已完整接收 Body
-                let expectedContentLength = Int(headers["content-length"] ?? "0") ?? 0
-                if bodyData.count < expectedContentLength && !isComplete {
-                    self.readHTTPRequest(connection: connection, accumulatedData: currentData)
+                guard headers["transfer-encoding"] == nil,
+                      let expectedContentLength = Int(headers["content-length"] ?? "0"),
+                      expectedContentLength >= 0 else {
+                    self.sendResponse(connection: connection, statusCode: 400, headers: [:], body: Data("Unsupported request framing".utf8))
+                    return
+                }
+                if bodyData.count < expectedContentLength {
+                    if isComplete || error != nil {
+                        self.sendResponse(connection: connection, statusCode: 400, headers: [:], body: Data("Incomplete request body".utf8))
+                    } else {
+                        self.readHTTPRequest(connection: connection, accumulatedData: currentData)
+                    }
                     return
                 }
                 
-                let request = ParsedRequest(method: method, path: decodedPath, headers: headers, body: bodyData)
+                let request = ParsedRequest(method: method, path: decodedPath, headers: headers, body: Data(bodyData.prefix(expectedContentLength)))
                 self.dispatchRequest(request, connection: connection)
             } else if isComplete || error != nil {
                 connection.cancel()
@@ -185,6 +222,11 @@ final class LocalGameServer: ObservableObject {
     
     // MARK: - 请求分发
     private func dispatchRequest(_ req: ParsedRequest, connection: NWConnection) {
+        if ["PUT", "POST", "DELETE"].contains(req.method),
+           req.headers["x-emu-session"] != sessionID.uuidString {
+            sendResponse(connection: connection, statusCode: 409, headers: [:], body: Data("Game session changed".utf8))
+            return
+        }
         // 跨域预检请求 OPTIONS
         if req.method == "OPTIONS" {
             let corsHeaders = [
@@ -239,101 +281,109 @@ final class LocalGameServer: ObservableObject {
         sendResponse(connection: connection, statusCode: 405, headers: [:], body: Data("Method Not Allowed".utf8))
     }
     
-    // MARK: - 批量读取存档 (GET /_emu/saves)
-    private func handleListSaves(connection: NWConnection) {
-        guard let rootURL = rootDirectoryURL else {
-            sendResponse(connection: connection, statusCode: 500, headers: [:], body: Data())
-            return
-        }
-        let saveDir = rootURL.appendingPathComponent("save")
-        var resultDict = [String: String]()
-        if let files = try? FileManager.default.contentsOfDirectory(atPath: saveDir.path) {
-            for file in files {
-                let lower = file.lowercased()
-                if lower.hasSuffix(".rpgsave") || lower.hasSuffix(".rmmzsave") {
-                    let fileURL = saveDir.appendingPathComponent(file)
-                    if let str = try? String(contentsOf: fileURL, encoding: .utf8) {
-                        resultDict[file] = str
-                    }
+    // Save bootstrap is read on the same queue as HTTP mutations, before navigation.
+    func loadBootstrap(completion: @escaping (Result<Data, Error>) -> Void) {
+        queue.async {
+            let result = Result<Data, Error> {
+                guard let root = self.rootDirectoryURL else { throw CocoaError(.fileNoSuchFile) }
+                let namespace = SHA256.hash(data: Data(root.standardizedFileURL.path.utf8))
+                    .map { String(format: "%02x", $0) }.joined()
+                var gameTitle = ""
+                if let systemURL = self.resolveCaseInsensitiveFile(root: root, relativePath: "data/System.json"),
+                   self.contained(systemURL, in: root), let systemData = try? Data(contentsOf: systemURL),
+                   let system = (try? JSONSerialization.jsonObject(with: systemData)) as? [String: Any] {
+                    gameTitle = system["gameTitle"] as? String ?? ""
                 }
+                return try JSONSerialization.data(withJSONObject: [
+                    "namespace": namespace,
+                    "session": self.sessionID.uuidString,
+                    "gameTitle": gameTitle,
+                    "saves": try self.readSaves()
+                ])
             }
-        }
-        if let jsonData = try? JSONSerialization.data(withJSONObject: resultDict) {
-            let headers = [
-                "Content-Type": "application/json; charset=utf-8",
-                "Content-Length": "\(jsonData.count)",
-                "Access-Control-Allow-Origin": "*",
-                "Cache-Control": "no-cache"
-            ]
-            sendResponse(connection: connection, statusCode: 200, headers: headers, body: jsonData)
-        } else {
-            let emptyData = Data("{}".utf8)
-            sendResponse(connection: connection, statusCode: 200, headers: ["Content-Type": "application/json", "Content-Length": "\(emptyData.count)", "Access-Control-Allow-Origin": "*"], body: emptyData)
+            DispatchQueue.main.async { completion(result) }
         }
     }
-    
-    // MARK: - 存档写入支持 (PUT/POST)
-    private func handleSaveWrite(path: String, body: Data, connection: NWConnection) {
-        guard let rootURL = rootDirectoryURL else {
-            sendResponse(connection: connection, statusCode: 500, headers: [:], body: Data("Server Not Configured".utf8))
-            return
+
+    private func isSaveName(_ name: String) -> Bool {
+        let lower = name.lowercased()
+        return !name.contains("/") && !name.contains("\\") &&
+            [".rpgsave", ".rpgsave.bak", ".rmmzsave", ".rmmzsave_"].contains { lower.hasSuffix($0) }
+    }
+
+    private func contained(_ url: URL, in root: URL) -> Bool {
+        let base = root.resolvingSymlinksInPath().standardizedFileURL.path
+        let path = url.resolvingSymlinksInPath().standardizedFileURL.path
+        return path.hasPrefix(base + "/")
+    }
+
+    private func readSaves() throws -> [String: String] {
+        guard let root = rootDirectoryURL else { throw CocoaError(.fileNoSuchFile) }
+        let directory = resolveCaseInsensitiveFile(root: root, relativePath: "save") ?? root.appendingPathComponent("save")
+        guard contained(directory, in: root) else { throw CocoaError(.fileReadNoPermission) }
+        guard FileManager.default.fileExists(atPath: directory.path) else { return [:] }
+        var saves: [String: String] = [:]
+        for file in try FileManager.default.contentsOfDirectory(atPath: directory.path) where isSaveName(file) {
+            let url = directory.appendingPathComponent(file)
+            guard contained(url, in: root) else { throw CocoaError(.fileReadNoPermission) }
+            // Do not turn unreadable saves into a successful empty snapshot.
+            let key = file.lowercased()
+            guard saves[key] == nil else {
+                throw NSError(domain: "Emu.Save", code: 1, userInfo: [NSLocalizedDescriptionKey: "存档文件名大小写冲突: \(file)"])
+            }
+            saves[key] = try String(contentsOf: url, encoding: .utf8)
         }
-        
-        let sanitizedPath = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let targetFileURL = rootURL.appendingPathComponent(sanitizedPath)
-        
-        // 安全沙盒防御
-        guard targetFileURL.standardizedFileURL.path.hasPrefix(rootURL.standardizedFileURL.path) else {
-            sendResponse(connection: connection, statusCode: 403, headers: [:], body: Data("Forbidden".utf8))
-            return
-        }
-        
-        let parentDir = targetFileURL.deletingLastPathComponent()
-        if !FileManager.default.fileExists(atPath: parentDir.path) {
-            try? FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
-        }
-        
+        return saves
+    }
+
+    private func handleListSaves(connection: NWConnection) {
         do {
-            try body.write(to: targetFileURL, options: .atomic)
-            let responseHeaders = [
-                "Access-Control-Allow-Origin": "*",
-                "Content-Type": "application/json; charset=utf-8",
-                "Content-Length": "15"
-            ]
-            sendResponse(connection: connection, statusCode: 200, headers: responseHeaders, body: Data("{\"status\":\"ok\"}".utf8))
+            let data = try JSONSerialization.data(withJSONObject: readSaves())
+            sendResponse(connection: connection, statusCode: 200, headers: ["Content-Type": "application/json; charset=utf-8"], body: data)
         } catch {
-            let errData = Data("Write Error: \(error.localizedDescription)".utf8)
-            sendResponse(connection: connection, statusCode: 500, headers: ["Access-Control-Allow-Origin": "*"], body: errData)
+            GameLogManager.shared.log("读取存档失败: \(error.localizedDescription)", level: .error)
+            sendResponse(connection: connection, statusCode: 500, headers: [:], body: Data("Save read failed".utf8))
         }
     }
-    
-    // MARK: - 存档删除支持 (DELETE)
+
+    private func saveURL(path: String) -> URL? {
+        guard let root = rootDirectoryURL else { return nil }
+        let parts = path.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count == 3, parts[0].isEmpty, parts[1] == "save", isSaveName(String(parts[2])) else { return nil }
+        let directory = resolveCaseInsensitiveFile(root: root, relativePath: "save") ?? root.appendingPathComponent("save")
+        let url = resolveCaseInsensitiveFile(root: root, relativePath: String(path.dropFirst())) ?? directory.appendingPathComponent(String(parts[2]))
+        return contained(url, in: root) ? url : nil
+    }
+
+    private func handleSaveWrite(path: String, body: Data, connection: NWConnection) {
+        guard let url = saveURL(path: path) else {
+            sendResponse(connection: connection, statusCode: 403, headers: [:], body: Data("Invalid save path".utf8))
+            return
+        }
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try body.write(to: url, options: .atomic)
+            sendResponse(connection: connection, statusCode: 200, headers: [:], body: Data("OK".utf8))
+        } catch {
+            GameLogManager.shared.log("存档写入失败 \(path): \(error.localizedDescription)", level: .error)
+            sendResponse(connection: connection, statusCode: 500, headers: [:], body: Data("Save write failed".utf8))
+        }
+    }
+
     private func handleSaveDelete(path: String, connection: NWConnection) {
-        guard let rootURL = rootDirectoryURL else {
-            sendResponse(connection: connection, statusCode: 500, headers: [:], body: Data("Server Not Configured".utf8))
+        guard let url = saveURL(path: path) else {
+            sendResponse(connection: connection, statusCode: 403, headers: [:], body: Data("Invalid save path".utf8))
             return
         }
-        
-        let sanitizedPath = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let targetFileURL = rootURL.appendingPathComponent(sanitizedPath)
-        
-        guard targetFileURL.standardizedFileURL.path.hasPrefix(rootURL.standardizedFileURL.path) else {
-            sendResponse(connection: connection, statusCode: 403, headers: [:], body: Data("Forbidden".utf8))
-            return
+        do {
+            if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+            sendResponse(connection: connection, statusCode: 200, headers: [:], body: Data("OK".utf8))
+        } catch {
+            GameLogManager.shared.log("存档删除失败 \(path): \(error.localizedDescription)", level: .error)
+            sendResponse(connection: connection, statusCode: 500, headers: [:], body: Data("Save delete failed".utf8))
         }
-        
-        if FileManager.default.fileExists(atPath: targetFileURL.path) {
-            try? FileManager.default.removeItem(at: targetFileURL)
-        }
-        
-        let responseHeaders = [
-            "Access-Control-Allow-Origin": "*",
-            "Content-Type": "application/json; charset=utf-8",
-            "Content-Length": "15"
-        ]
-        sendResponse(connection: connection, statusCode: 200, headers: responseHeaders, body: Data("{\"status\":\"ok\"}".utf8))
     }
-    
+
     // MARK: - 文件检索与分段响应 (HTTP 206 Partial Content)
     private func serveFile(at relativePath: String, method: String, requestHeaders: [String: String], connection: NWConnection) {
         guard let rootURL = rootDirectoryURL else {
@@ -345,7 +395,7 @@ final class LocalGameServer: ObservableObject {
         var targetFileURL = rootURL.appendingPathComponent(sanitizedPath)
         
         // 1. 安全沙盒检查
-        guard targetFileURL.standardizedFileURL.path.hasPrefix(rootURL.standardizedFileURL.path) else {
+        guard contained(targetFileURL, in: rootURL) else {
             sendResponse(connection: connection, statusCode: 403, headers: [:], body: Data("Forbidden".utf8))
             return
         }
@@ -375,107 +425,53 @@ final class LocalGameServer: ObservableObject {
             }
         }
         
-        // 若仍然找不到，应用容错兜底
-        guard fileManager.fileExists(atPath: targetFileURL.path) else {
-            let lowerPath = sanitizedPath.lowercased()
-            let lowerExt = targetFileURL.pathExtension.lowercased()
-            
-            // 容错 1：对于缺失的第三方插件或 JS 脚本，返回 200 OK 空桩
-            if lowerPath.hasSuffix(".js") {
-                GameLogManager.shared.log("缺失脚本已自动注入空桩: \(sanitizedPath)", level: .warning)
-                let dummyJS = Data("// Emu auto-generated stub for missing script: \(sanitizedPath)\n".utf8)
-                let headers = [
-                    "Content-Type": "application/javascript; charset=utf-8",
-                    "Content-Length": "\(dummyJS.count)",
-                    "Access-Control-Allow-Origin": "*",
-                    "Cache-Control": "no-cache"
-                ]
-                sendResponse(connection: connection, statusCode: 200, headers: headers, body: dummyJS)
-                return
-            }
-            
-            // 容错 2：对于缺失的图片，返回 1x1 透明 PNG
-            if ["png", "jpg", "jpeg", "gif"].contains(lowerExt) {
-                GameLogManager.shared.log("缺失贴图已注入透明桩: \(sanitizedPath)", level: .warning)
-                let transparentPNG = Data([
-                    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D,
-                    0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
-                    0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00,
-                    0x0A, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00,
-                    0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49,
-                    0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82
-                ])
-                let headers = [
-                    "Content-Type": "image/png",
-                    "Content-Length": "\(transparentPNG.count)",
-                    "Access-Control-Allow-Origin": "*",
-                    "Cache-Control": "no-cache"
-                ]
-                sendResponse(connection: connection, statusCode: 200, headers: headers, body: transparentPNG)
-                return
-            }
-            
-            // 容错 3：对于缺失的音频，返回空音频
-            if ["ogg", "m4a", "mp3", "wav"].contains(lowerExt) {
-                GameLogManager.shared.log("缺失音频已注入静音桩: \(sanitizedPath)", level: .warning)
-                let headers = [
-                    "Content-Type": mimeType(for: lowerExt),
-                    "Content-Length": "0",
-                    "Access-Control-Allow-Origin": "*",
-                    "Cache-Control": "no-cache"
-                ]
-                sendResponse(connection: connection, statusCode: 200, headers: headers, body: Data())
-                return
-            }
-            
-            // 容错 4：对于缺失的地图 JSON，返回基础空地图结构
-            if lowerPath.hasPrefix("data/map") && lowerPath.hasSuffix(".json") {
-                GameLogManager.shared.log("缺失地图已生成安全底图: \(sanitizedPath)", level: .warning)
-                let dummyMap = Data("{\"width\":20,\"height\":15,\"data\":[],\"events\":[null],\"scrollType\":0,\"tilesetId\":1,\"bgm\":{\"name\":\"\",\"volume\":90,\"pitch\":100,\"pan\":0},\"bgs\":{\"name\":\"\",\"volume\":90,\"pitch\":100,\"pan\":0},\"autoplayBgm\":false,\"autoplayBgs\":false,\"encounterList\":[]}".utf8)
-                let headers = [
-                    "Content-Type": "application/json; charset=utf-8",
-                    "Content-Length": "\(dummyMap.count)",
-                    "Access-Control-Allow-Origin": "*",
-                    "Cache-Control": "no-cache"
-                ]
-                sendResponse(connection: connection, statusCode: 200, headers: headers, body: dummyMap)
-                return
-            }
-            
-            GameLogManager.shared.log("未找到文件 (404): \(sanitizedPath)", level: .error)
-            sendResponse(connection: connection, statusCode: 404, headers: ["Access-Control-Allow-Origin": "*"], body: Data("Not Found".utf8))
+        guard contained(targetFileURL, in: rootURL) else {
+            sendResponse(connection: connection, statusCode: 403, headers: [:], body: Data("Forbidden".utf8))
             return
         }
-        
-        guard let fileData = try? Data(contentsOf: targetFileURL) else {
+        // Missing core/plugin/data assets must remain visible failures.
+        guard fileManager.fileExists(atPath: targetFileURL.path) else {
+            GameLogManager.shared.log("未找到文件 (404): \(sanitizedPath)", level: .error)
+            sendResponse(connection: connection, statusCode: 404, headers: [:], body: method == "HEAD" ? Data() : Data("Not Found".utf8))
+            return
+        }
+
+        guard var fileData = try? Data(contentsOf: targetFileURL) else {
             GameLogManager.shared.log("文件读取失败 (500): \(sanitizedPath)", level: .error)
             sendResponse(connection: connection, statusCode: 500, headers: ["Access-Control-Allow-Origin": "*"], body: Data("Read Error".utf8))
             return
         }
         
+        // Install synchronously after the managers are defined, before plugins/main.
+        if ["rpg_managers.js", "rmmz_managers.js"].contains(targetFileURL.lastPathComponent.lowercased()) {
+            fileData.append(Data("\n;window.__emuInstallRuntime && window.__emuInstallRuntime();\n".utf8))
+        }
+
         let totalCount = fileData.count
         let mime = mimeType(for: targetFileURL.pathExtension)
         
         // 4. 解析 HTTP Range 请求 (iOS WebKit 流媒体核心要求)
         if let rangeHeader = requestHeaders["range"], rangeHeader.hasPrefix("bytes=") {
             let rangeSpec = String(rangeHeader.dropFirst(6))
-            let parts = rangeSpec.components(separatedBy: "-")
-            
-            let start = Int(parts[0]) ?? 0
-            var end = totalCount - 1
-            if parts.count > 1, let explicitEnd = Int(parts[1]) {
-                end = min(explicitEnd, totalCount - 1)
+            let parts = rangeSpec.split(separator: "-", omittingEmptySubsequences: false)
+            var start = -1
+            var end = -1
+            if parts.count == 2, !rangeSpec.contains(","), totalCount > 0 {
+                if parts[0].isEmpty, let suffix = Int(parts[1]), suffix > 0 {
+                    start = max(0, totalCount - suffix)
+                    end = totalCount - 1
+                } else if let first = Int(parts[0]), first >= 0 {
+                    start = first
+                    if parts[1].isEmpty { end = totalCount - 1 }
+                    else if let last = Int(parts[1]), last >= 0 { end = min(last, totalCount - 1) }
+                }
             }
-            
-            guard start <= end, start < totalCount else {
-                let headers = [
-                    "Content-Range": "bytes */\(totalCount)",
-                    "Access-Control-Allow-Origin": "*"
-                ]
-                sendResponse(connection: connection, statusCode: 416, headers: headers, body: Data())
+            guard start >= 0, start <= end, start < totalCount else {
+                sendResponse(connection: connection, statusCode: 416,
+                             headers: ["Content-Range": "bytes */\(totalCount)"], body: Data())
                 return
             }
-            
+
             let chunkLength = end - start + 1
             let chunk = fileData.subdata(in: start..<(start + chunkLength))
             
@@ -571,6 +567,10 @@ final class LocalGameServer: ObservableObject {
         switch statusCode {
         case 200: statusText = "OK"
         case 206: statusText = "Partial Content"
+        case 400: statusText = "Bad Request"
+        case 409: statusText = "Conflict"
+        case 416: statusText = "Range Not Satisfiable"
+        case 500: statusText = "Internal Server Error"
         case 403: statusText = "Forbidden"
         case 404: statusText = "Not Found"
         case 405: statusText = "Method Not Allowed"
@@ -579,6 +579,9 @@ final class LocalGameServer: ObservableObject {
         
         var effectiveHeaders = headers
         effectiveHeaders["Connection"] = "close"
+        if effectiveHeaders["Content-Length"] == nil { effectiveHeaders["Content-Length"] = "\(body.count)" }
+        effectiveHeaders["Access-Control-Allow-Origin"] = "*"
+        effectiveHeaders["Cache-Control"] = "no-store"
         
         var headerString = "HTTP/1.1 \(statusCode) \(statusText)\r\n"
         for (key, val) in effectiveHeaders {

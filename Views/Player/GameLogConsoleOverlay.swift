@@ -144,7 +144,7 @@ struct GameLogConsoleOverlay: View {
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 8)
                             }
-                            .onChange(of: logManager.logs.count) { _ in
+                            .onChange(of: logManager.logs.last?.id) { _ in
                                 if let last = logManager.logs.last {
                                     withAnimation(.easeOut(duration: 0.1)) {
                                         scrollProxy.scrollTo(last.id, anchor: .bottom)
