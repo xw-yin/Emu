@@ -42,12 +42,19 @@ struct GameLibraryView: View {
                         emptyStateView
                             .padding(.top, isLandscape ? 24 : 60)
                     } else {
-                        LazyVGrid(columns: columns, spacing: 18) {
-                            ForEach(libraryManager.games) { game in
-                                GameCardView(game: game) {
-                                    selectedGame = game
+                        VStack(spacing: 20) {
+                            LazyVGrid(columns: columns, spacing: 18) {
+                                ForEach(libraryManager.games) { game in
+                                    GameCardView(game: game) {
+                                        selectedGame = game
+                                    }
                                 }
                             }
+                            
+                            Text("Emu v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0") (Build \(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"))")
+                                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                .foregroundStyle(.tertiary)
+                                .padding(.top, 8)
                         }
                         // 横屏下避开灵动岛与顶部悬浮标题，竖屏保持黄金边距
                         .padding(.horizontal, isLandscape ? 64 : 20)
@@ -161,6 +168,11 @@ struct GameLibraryView: View {
                             .font(.system(size: 13, weight: .regular))
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
+                        
+                        Text("Emu v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0") (Build \(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"))")
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                            .padding(.top, 4)
                     }
                 }
                 .padding(.horizontal, 40)

@@ -71,14 +71,18 @@ jobs:
             fi
           fi
           
+          # 清除基础版本号中的既有 +b... 后缀，确保始终提取纯版本基准 (如 1.0.0)
+          BASE_VER=$(echo "$RAW_VER" | cut -d'+' -f1 | cut -d'-' -f1)
+          RAW_VER="${BASE_VER:-1.0.0}"
+          
           # 2. 提取构建号 (Build Number: 基于 GitHub Action Run Number 自动递增)
           BUILD_NUM="${{ github.run_number }}"
           
           # 3. 规范化 "版本号 + Build" 格式
-          FULL_VER="${RAW_VER}+${BUILD_NUM}"
+          FULL_VER="${RAW_VER}+b${BUILD_NUM}"
           TAG_NAME="v${RAW_VER}+b${BUILD_NUM}"
           RELEASE_TITLE="Emu v${RAW_VER} (Build ${BUILD_NUM})"
-          IPA_NAME="Emu-v${FULL_VER}.ipa"
+          IPA_NAME="Emu-${RAW_VER}-b${BUILD_NUM}.ipa"
           
           echo "version=${RAW_VER}" >> $GITHUB_OUTPUT
           echo "build_number=${BUILD_NUM}" >> $GITHUB_OUTPUT
@@ -90,16 +94,16 @@ jobs:
           echo "========================================"
           echo "版本号 (Version):     ${RAW_VER}"
           echo "构建号 (Build):       ${BUILD_NUM}"
-          echo "完整版本 (Full):      ${FULL_VER}"
+          echo "应用版本 (App Full):  ${FULL_VER}"
           echo "发布标签 (Tag):       ${TAG_NAME}"
           echo "安装包名 (IPA):       ${IPA_NAME}"
           echo "========================================"
 
       - name: Apply Versioning to project.yml
         run: |
-          sed -i '' "s/MARKETING_VERSION: .*/MARKETING_VERSION: \"${{ steps.versioning.outputs.version }}\"/" project.yml
+          sed -i '' "s/MARKETING_VERSION: .*/MARKETING_VERSION: \"${{ steps.versioning.outputs.full_version }}\"/" project.yml
           sed -i '' "s/CURRENT_PROJECT_VERSION: .*/CURRENT_PROJECT_VERSION: ${{ steps.versioning.outputs.build_number }}/" project.yml
-          echo "Updated project.yml with version ${{ steps.versioning.outputs.version }} and build ${{ steps.versioning.outputs.build_number }}"
+          echo "Updated project.yml with MARKETING_VERSION ${{ steps.versioning.outputs.full_version }} and CURRENT_PROJECT_VERSION ${{ steps.versioning.outputs.build_number }}"
 
       - name: Generate Compatible Xcode Project
         run: |
