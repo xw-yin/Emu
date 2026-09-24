@@ -1,0 +1,201 @@
+import Foundation
+import UIKit
+
+/// 游戏库管理器：统一调度沙盒内置游戏与外部“下载”目录零拷贝直读游戏
+final class GameLibraryManager: ObservableObject {
+    static let shared = GameLibraryManager()
+    
+    @Published var games: [Game] = []
+    
+    private let gamesDirectoryName = "Games"
+    private let externalGamesKey = "com.emu.external_games_v1"
+    
+    private var gamesDirectoryURL: URL {
+        let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let dir = documentsURL.appendingPathComponent(gamesDirectoryName, isDirectory: true)
+        if !FileManager.default.fileExists(atPath: dir.path) {
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        return dir
+    }
+    
+    private init() {
+        loadGames()
+    }
+    
+    /// 加载并刷新全部游戏（沙盒内部 + 外部下载目录）
+    func loadGames() {
+        var allGames: [Game] = []
+        
+        // 1. 扫描沙盒 Documents/Games 目录
+        allGames.append(contentsOf: scanSandboxGames())
+        
+        // 2. 加载外部零拷贝目录书签
+        allGames.append(contentsOf: loadExternalBookmarkGames())
+        
+        DispatchQueue.main.async {
+            self.games = allGames
+        }
+    }
+    
+    /// 核心功能：直接关联外部文件夹（如“我的iPhone/下载/某个游戏”），零拷贝原地直读
+    func linkExternalDirectory(at url: URL) -> Bool {
+        guard url.startAccessingSecurityScopedResource() else {
+            print("[GameLibrary] 无法获取外部目录安全权限")
+            return false
+        }
+        defer { url.stopAccessingSecurityScopedResource() }
+        
+        guard let gameRoot = findGameRoot(within: url) else {
+            print("[GameLibrary] 外部目录中未找到 index.html")
+            return false
+        }
+        
+        // 生成永久持久化安全书签
+        guard let bookmark = try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil) else {
+            print("[GameLibrary] 创建安全书签失败")
+            return false
+        }
+        
+        let engine = detectEngine(at: gameRoot)
+        let title = extractGameTitle(from: gameRoot) ?? url.lastPathComponent
+        let coverPath = findCoverImage(at: gameRoot)
+        
+        let externalGame = Game(
+            title: title,
+            rootDirectoryName: url.lastPathComponent,
+            engineType: engine,
+            coverImageRelativePath: coverPath,
+            isExternalStorage: true,
+            securityBookmarkData: bookmark
+        )
+        
+        var currentExternal = loadSavedExternalGames()
+        // 去重
+        currentExternal.removeAll { $0.rootDirectoryName == externalGame.rootDirectoryName }
+        currentExternal.append(externalGame)
+        saveExternalGames(currentExternal)
+        
+        loadGames()
+        return true
+    }
+    
+    /// 获取某个游戏的启动真实 URL（自动处理外部安全作用域权限激活）
+    func getGameRootURL(for game: Game) -> URL? {
+        if game.isExternalStorage, let bookmarkData = game.securityBookmarkData {
+            var isStale = false
+            if let resolvedURL = try? URL(resolvingBookmarkData: bookmarkData, options: [], relativeTo: nil, bookmarkDataIsStale: &isStale) {
+                // 激活外部访问权限
+                _ = resolvedURL.startAccessingSecurityScopedResource()
+                return findGameRoot(within: resolvedURL)
+            }
+            return nil
+        } else {
+            let folder = gamesDirectoryURL.appendingPathComponent(game.rootDirectoryName)
+            return findGameRoot(within: folder)
+        }
+    }
+    
+    // MARK: - 私有辅助
+    private func scanSandboxGames() -> [Game] {
+        var scanned: [Game] = []
+        let fileManager = FileManager.default
+        guard let contents = try? fileManager.contentsOfDirectory(at: gamesDirectoryURL, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) else {
+            return []
+        }
+        
+        for folder in contents {
+            var isDir: ObjCBool = false
+            if fileManager.fileExists(atPath: folder.path, isDirectory: &isDir), isDir.boolValue {
+                if let gameRoot = findGameRoot(within: folder) {
+                    let engine = detectEngine(at: gameRoot)
+                    let title = extractGameTitle(from: gameRoot) ?? folder.lastPathComponent
+                    let cover = findCoverImage(at: gameRoot)
+                    scanned.append(Game(
+                        title: title,
+                        rootDirectoryName: folder.lastPathComponent,
+                        engineType: engine,
+                        coverImageRelativePath: cover,
+                        isExternalStorage: false
+                    ))
+                }
+            }
+        }
+        return scanned
+    }
+    
+    private func loadExternalBookmarkGames() -> [Game] {
+        return loadSavedExternalGames()
+    }
+    
+    private func loadSavedExternalGames() -> [Game] {
+        guard let data = UserDefaults.standard.data(forKey: externalGamesKey),
+              let list = try? JSONDecoder().decode([Game].self, from: data) else {
+            return []
+        }
+        return list
+    }
+    
+    private func saveExternalGames(_ list: [Game]) {
+        if let data = try? JSONEncoder().encode(list) {
+            UserDefaults.standard.set(data, forKey: externalGamesKey)
+        }
+    }
+    
+    private func findGameRoot(within folder: URL) -> URL? {
+        let directIndex = folder.appendingPathComponent("index.html")
+        if FileManager.default.fileExists(atPath: directIndex.path) {
+            return folder
+        }
+        
+        guard let subdirs = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) else {
+            return nil
+        }
+        
+        for sub in subdirs {
+            let nestedIndex = sub.appendingPathComponent("index.html")
+            if FileManager.default.fileExists(atPath: nestedIndex.path) {
+                return sub
+            }
+        }
+        return nil
+    }
+    
+    private func detectEngine(at rootURL: URL) -> GameEngineType {
+        let fm = FileManager.default
+        if fm.fileExists(atPath: rootURL.appendingPathComponent("js/rmmz_core.js").path) {
+            return .rpgMakerMZ
+        }
+        if fm.fileExists(atPath: rootURL.appendingPathComponent("js/rpg_core.js").path) {
+            return .rpgMakerMV
+        }
+        if fm.fileExists(atPath: rootURL.appendingPathComponent("game/config.txt").path) ||
+           fm.fileExists(atPath: rootURL.appendingPathComponent("webgal").path) {
+            return .webGal
+        }
+        return .unknown
+    }
+    
+    private func extractGameTitle(from rootURL: URL) -> String? {
+        let indexFile = rootURL.appendingPathComponent("index.html")
+        guard let content = try? String(contentsOf: indexFile, encoding: .utf8) else { return nil }
+        if let range = content.range(of: "(?<=<title>)(.*?)(?=</title>)", options: .regularExpression) {
+            let title = String(content[range]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !title.isEmpty && title != "RPG Maker MV" && title != "RPG Maker MZ" {
+                return title
+            }
+        }
+        return nil
+    }
+    
+    private func findCoverImage(at rootURL: URL) -> String? {
+        let candidates = ["icon/icon.png", "img/system/IconSet.png", "cover.jpg", "cover.png"]
+        for c in candidates {
+            let fullURL = rootURL.appendingPathComponent(c)
+            if FileManager.default.fileExists(atPath: fullURL.path) {
+                return fullURL.path
+            }
+        }
+        return nil
+    }
+}

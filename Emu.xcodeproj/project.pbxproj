@@ -1,0 +1,421 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		1C7DA552BC1FC2C168F205BA /* GameCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1864D879CB1A49038625E2D7 /* GameCardView.swift */; };
+		20D9B6B580883215B3BA2B28 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = DA98A584AA72D038459413A0 /* Assets.xcassets */; };
+		3A3451C3F18879913B889334 /* GamePlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2A3ADFEAA5C39EEAFE91D33 /* GamePlayerView.swift */; };
+		4E31DD8BCEDD6719AC695999 /* LocalGameServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58F112629507BA8A13018595 /* LocalGameServer.swift */; };
+		61E837DDF99FD4F1D1219F25 /* KeyMappingManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41EBED2AFCEF768FCE02F203 /* KeyMappingManager.swift */; };
+		770E922DD3648172CD9D421E /* GameWebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 159507E151539B1D2B0E2370 /* GameWebView.swift */; };
+		771B5CE4C80F786051C0C8B5 /* GameLibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE41F256CA5395502D3E89E0 /* GameLibraryView.swift */; };
+		A573BC2AD9C4D7FAB722A940 /* HapticManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26736BE0DE2061E77005ABF0 /* HapticManager.swift */; };
+		A91E8D3586BE5C0CAF262DFB /* EmuApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = C169FB50FC90D33A6392076A /* EmuApp.swift */; };
+		AA39BDAD306AE5A8138A8175 /* GameLibraryManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F19468944925D4EB23166F1 /* GameLibraryManager.swift */; };
+		B8EF1597558DBED0F3A20317 /* GlassComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E8A792BFDD5037E03C62459 /* GlassComponents.swift */; };
+		D36B590E460B4DE2C7926B57 /* GlassActionButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3AC188599C023C6CD3C3405 /* GlassActionButton.swift */; };
+		D8C24E5B045CCA4A428CE815 /* KeyMapping.swift in Sources */ = {isa = PBXBuildFile; fileRef = 096225C309A36E7F1D052E84 /* KeyMapping.swift */; };
+		DCB06C4EEC4878893AB1EE26 /* KeyMappingEditorSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02C87D94B34BC5FEB00E41D6 /* KeyMappingEditorSheet.swift */; };
+		E357AC7D09FE292A0178567F /* VirtualControllerOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = E70079A6BCABDAACE5C4EBF8 /* VirtualControllerOverlay.swift */; };
+		E607B9536AE766B10401B677 /* GlassDpadView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CD35BC26FA2613FAD970FBE /* GlassDpadView.swift */; };
+		FC6FAED3DA58EDAFAE21AA87 /* Game.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD4B23AB27467A48751F45A5 /* Game.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		02C87D94B34BC5FEB00E41D6 /* KeyMappingEditorSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyMappingEditorSheet.swift; sourceTree = "<group>"; };
+		096225C309A36E7F1D052E84 /* KeyMapping.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyMapping.swift; sourceTree = "<group>"; };
+		159507E151539B1D2B0E2370 /* GameWebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameWebView.swift; sourceTree = "<group>"; };
+		1864D879CB1A49038625E2D7 /* GameCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameCardView.swift; sourceTree = "<group>"; };
+		26736BE0DE2061E77005ABF0 /* HapticManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HapticManager.swift; sourceTree = "<group>"; };
+		41EBED2AFCEF768FCE02F203 /* KeyMappingManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyMappingManager.swift; sourceTree = "<group>"; };
+		58F112629507BA8A13018595 /* LocalGameServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalGameServer.swift; sourceTree = "<group>"; };
+		6E8A792BFDD5037E03C62459 /* GlassComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlassComponents.swift; sourceTree = "<group>"; };
+		7F19468944925D4EB23166F1 /* GameLibraryManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameLibraryManager.swift; sourceTree = "<group>"; };
+		9CD35BC26FA2613FAD970FBE /* GlassDpadView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlassDpadView.swift; sourceTree = "<group>"; };
+		A2A3ADFEAA5C39EEAFE91D33 /* GamePlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GamePlayerView.swift; sourceTree = "<group>"; };
+		AD4B23AB27467A48751F45A5 /* Game.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Game.swift; sourceTree = "<group>"; };
+		BA19021801299FCB3FEC5BC1 /* Emu.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Emu.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		BE41F256CA5395502D3E89E0 /* GameLibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameLibraryView.swift; sourceTree = "<group>"; };
+		C169FB50FC90D33A6392076A /* EmuApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmuApp.swift; sourceTree = "<group>"; };
+		DA98A584AA72D038459413A0 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		E70079A6BCABDAACE5C4EBF8 /* VirtualControllerOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VirtualControllerOverlay.swift; sourceTree = "<group>"; };
+		F3AC188599C023C6CD3C3405 /* GlassActionButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlassActionButton.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		0D4846D12F6C05E01B8C7DA1 /* Player */ = {
+			isa = PBXGroup;
+			children = (
+				A2A3ADFEAA5C39EEAFE91D33 /* GamePlayerView.swift */,
+				159507E151539B1D2B0E2370 /* GameWebView.swift */,
+			);
+			path = Player;
+			sourceTree = "<group>";
+		};
+		1502D898B56A086FFEFF35D5 /* Controller */ = {
+			isa = PBXGroup;
+			children = (
+				F3AC188599C023C6CD3C3405 /* GlassActionButton.swift */,
+				9CD35BC26FA2613FAD970FBE /* GlassDpadView.swift */,
+				02C87D94B34BC5FEB00E41D6 /* KeyMappingEditorSheet.swift */,
+				E70079A6BCABDAACE5C4EBF8 /* VirtualControllerOverlay.swift */,
+			);
+			path = Controller;
+			sourceTree = "<group>";
+		};
+		38CE913D1DB3380FB2EF0353 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				F7B3904CEE197C2DC159CB38 /* Components */,
+				1502D898B56A086FFEFF35D5 /* Controller */,
+				495AAEEF91FC1DE7FC86380A /* Library */,
+				0D4846D12F6C05E01B8C7DA1 /* Player */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		495AAEEF91FC1DE7FC86380A /* Library */ = {
+			isa = PBXGroup;
+			children = (
+				1864D879CB1A49038625E2D7 /* GameCardView.swift */,
+				BE41F256CA5395502D3E89E0 /* GameLibraryView.swift */,
+			);
+			path = Library;
+			sourceTree = "<group>";
+		};
+		69C342F9D96A074675DE40DE /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				AD4B23AB27467A48751F45A5 /* Game.swift */,
+				096225C309A36E7F1D052E84 /* KeyMapping.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		7BD9EB324188CFC5E9084649 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				BA19021801299FCB3FEC5BC1 /* Emu.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		7F53ADABA7B87A378D18F814 = {
+			isa = PBXGroup;
+			children = (
+				DA98A584AA72D038459413A0 /* Assets.xcassets */,
+				C169FB50FC90D33A6392076A /* EmuApp.swift */,
+				69C342F9D96A074675DE40DE /* Models */,
+				834F553843CC9E49B92AAB98 /* Services */,
+				38CE913D1DB3380FB2EF0353 /* Views */,
+				7BD9EB324188CFC5E9084649 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		834F553843CC9E49B92AAB98 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				7F19468944925D4EB23166F1 /* GameLibraryManager.swift */,
+				26736BE0DE2061E77005ABF0 /* HapticManager.swift */,
+				41EBED2AFCEF768FCE02F203 /* KeyMappingManager.swift */,
+				58F112629507BA8A13018595 /* LocalGameServer.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		F7B3904CEE197C2DC159CB38 /* Components */ = {
+			isa = PBXGroup;
+			children = (
+				6E8A792BFDD5037E03C62459 /* GlassComponents.swift */,
+			);
+			path = Components;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		71A2F3CAEDF2E90BF68B4FC2 /* Emu */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 35E2DE62A237F7E6E142BD38 /* Build configuration list for PBXNativeTarget "Emu" */;
+			buildPhases = (
+				ADD090F25C3B734A8750DFB2 /* Sources */,
+				25F632B96858C061330EB27C /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = Emu;
+			packageProductDependencies = (
+			);
+			productName = Emu;
+			productReference = BA19021801299FCB3FEC5BC1 /* Emu.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		8FE6FDE54AB5D1BF41A987BE /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+				};
+			};
+			buildConfigurationList = 9E8D67121A352122125CD919 /* Build configuration list for PBXProject "Emu" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 7F53ADABA7B87A378D18F814;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 7BD9EB324188CFC5E9084649 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				71A2F3CAEDF2E90BF68B4FC2 /* Emu */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		25F632B96858C061330EB27C /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				20D9B6B580883215B3BA2B28 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		ADD090F25C3B734A8750DFB2 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A91E8D3586BE5C0CAF262DFB /* EmuApp.swift in Sources */,
+				FC6FAED3DA58EDAFAE21AA87 /* Game.swift in Sources */,
+				1C7DA552BC1FC2C168F205BA /* GameCardView.swift in Sources */,
+				AA39BDAD306AE5A8138A8175 /* GameLibraryManager.swift in Sources */,
+				771B5CE4C80F786051C0C8B5 /* GameLibraryView.swift in Sources */,
+				3A3451C3F18879913B889334 /* GamePlayerView.swift in Sources */,
+				770E922DD3648172CD9D421E /* GameWebView.swift in Sources */,
+				D36B590E460B4DE2C7926B57 /* GlassActionButton.swift in Sources */,
+				B8EF1597558DBED0F3A20317 /* GlassComponents.swift in Sources */,
+				E607B9536AE766B10401B677 /* GlassDpadView.swift in Sources */,
+				A573BC2AD9C4D7FAB722A940 /* HapticManager.swift in Sources */,
+				D8C24E5B045CCA4A428CE815 /* KeyMapping.swift in Sources */,
+				DCB06C4EEC4878893AB1EE26 /* KeyMappingEditorSheet.swift in Sources */,
+				61E837DDF99FD4F1D1219F25 /* KeyMappingManager.swift in Sources */,
+				4E31DD8BCEDD6719AC695999 /* LocalGameServer.swift in Sources */,
+				E357AC7D09FE292A0178567F /* VirtualControllerOverlay.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		5962CDD5ED3909473CC2DA1D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		9EE93F92B1A0DCC1073267CF /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
+				INFOPLIST_KEY_UIFileSharingEnabled = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.emu.spatial;
+				PRODUCT_NAME = Emu;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.9;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		A8B1073CDC8EE8A6C5C80461 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
+				INFOPLIST_KEY_UIFileSharingEnabled = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.emu.spatial;
+				PRODUCT_NAME = Emu;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.9;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		DB3DF46D13B902A36AE10CD8 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		35E2DE62A237F7E6E142BD38 /* Build configuration list for PBXNativeTarget "Emu" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				9EE93F92B1A0DCC1073267CF /* Debug */,
+				A8B1073CDC8EE8A6C5C80461 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		9E8D67121A352122125CD919 /* Build configuration list for PBXProject "Emu" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5962CDD5ED3909473CC2DA1D /* Debug */,
+				DB3DF46D13B902A36AE10CD8 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 8FE6FDE54AB5D1BF41A987BE /* Project object */;
+}

@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>赛博方舟：创世纪 (CyberQuest)</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #0b0f19;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            color: #fff;
+        }
+        #gameCanvas {
+            box-shadow: 0 0 30px rgba(0, 240, 255, 0.2);
+            border-radius: 12px;
+            max-width: 100vw;
+            max-height: 100vh;
+        }
+        #dialogBox {
+            position: absolute;
+            bottom: 24px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 80%;
+            max-width: 600px;
+            background: rgba(15, 23, 42, 0.85);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(0, 240, 255, 0.4);
+            border-radius: 16px;
+            padding: 16px 24px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+            display: none;
+        }
+        #dialogName {
+            color: #00f0ff;
+            font-weight: bold;
+            font-size: 14px;
+            margin-bottom: 6px;
+        }
+        #dialogText {
+            font-size: 15px;
+            line-height: 1.5;
+            color: #e2e8f0;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas" width="816" height="624"></canvas>
+    <div id="dialogBox">
+        <div id="dialogName">阿尔法 AI 领航员</div>
+        <div id="dialogText">欢迎来到 Emu Spatial 模拟器！你现在正在通过全新的流体玻璃虚拟按键进行操控。请使用左侧悬浮十字键控制移动，按 [RUN] 冲刺加速，按 [B] 打开菜单！</div>
+    </div>
+
+    <!-- 模拟 RPG Maker MV 核心标记 -->
+    <script src="js/rpg_core.js"></script>
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const dialogBox = document.getElementById('dialogBox');
+
+        // 玩家状态
+        const player = {
+            x: 408,
+            y: 312,
+            size: 24,
+            speed: 4,
+            color: '#00f0ff',
+            trail: []
+        };
+
+        const keys = {};
+        let showDialog = true;
+        dialogBox.style.display = 'block';
+
+        window.addEventListener('keydown', (e) => {
+            keys[e.key] = true;
+            keys[e.code] = true;
+
+            if (e.key === 'Enter' || e.key === 'z' || e.key === 'Z') {
+                showDialog = !showDialog;
+                dialogBox.style.display = showDialog ? 'block' : 'none';
+            }
+            if (e.key === 'Escape' || e.key === 'x' || e.key === 'X') {
+                showDialog = false;
+                dialogBox.style.display = 'none';
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            keys[e.key] = false;
+            keys[e.code] = false;
+        });
+
+        // 游戏循环
+        function update() {
+            let currentSpeed = (keys['Shift'] || keys['ShiftLeft']) ? player.speed * 2 : player.speed;
+
+            let moved = false;
+            if (keys['ArrowUp']) { player.y -= currentSpeed; moved = true; }
+            if (keys['ArrowDown']) { player.y += currentSpeed; moved = true; }
+            if (keys['ArrowLeft']) { player.x -= currentSpeed; moved = true; }
+            if (keys['ArrowRight']) { player.x += currentSpeed; moved = true; }
+
+            // 边界约束
+            player.x = Math.max(player.size, Math.min(canvas.width - player.size, player.x));
+            player.y = Math.max(player.size, Math.min(canvas.height - player.size, player.y));
+
+            if (moved) {
+                player.trail.push({x: player.x, y: player.y, alpha: 0.6});
+                if (player.trail.length > 8) player.trail.shift();
+            }
+        }
+
+        function drawGrid() {
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.04)';
+            ctx.lineWidth = 1;
+            const tileSize = 48;
+            for (let x = 0; x < canvas.width; x += tileSize) {
+                ctx.beginPath();
+                ctx.moveTo(x, 0);
+                ctx.lineTo(x, canvas.height);
+                ctx.stroke();
+            }
+            for (let y = 0; y < canvas.height; y += tileSize) {
+                ctx.beginPath();
+                ctx.moveTo(0, y);
+                ctx.lineTo(canvas.width, y);
+                ctx.stroke();
+            }
+        }
+
+        function render() {
+            ctx.fillStyle = '#0f172a';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            drawGrid();
+
+            // 绘制粒子拖尾
+            player.trail.forEach((t, i) => {
+                ctx.fillStyle = `rgba(0, 240, 255, ${t.alpha * (i / player.trail.length)})`;
+                ctx.beginPath();
+                ctx.arc(t.x, t.y, player.size * 0.8, 0, Math.PI * 2);
+                ctx.fill();
+            });
+
+            // 绘制光晕
+            const grad = ctx.createRadialGradient(player.x, player.y, 4, player.x, player.y, 40);
+            grad.addColorStop(0, 'rgba(0, 240, 255, 0.8)');
+            grad.addColorStop(1, 'rgba(0, 240, 255, 0)');
+            ctx.fillStyle = grad;
+            ctx.beginPath();
+            ctx.arc(player.x, player.y, 40, 0, Math.PI * 2);
+            ctx.fill();
+
+            // 绘制玩家核心
+            ctx.fillStyle = '#ffffff';
+            ctx.beginPath();
+            ctx.arc(player.x, player.y, player.size / 2, 0, Math.PI * 2);
+            ctx.fill();
+
+            // 绘制 HUD
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+            ctx.font = '14px monospace';
+            ctx.fillText(`坐标: (${Math.round(player.x)}, ${Math.round(player.y)})`, 20, 36);
+            ctx.fillText(`引擎状态: RPG Maker MV (HTML5 / WebGL 60FPS)`, 20, 60);
+
+            requestAnimationFrame(() => {
+                update();
+                render();
+            });
+        }
+
+        render();
+    </script>
+</body>
+</html>
