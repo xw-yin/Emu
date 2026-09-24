@@ -15,6 +15,44 @@ struct GameWebView: UIViewRepresentable {
         preferences.allowsContentJavaScript = true
         configuration.defaultWebpagePreferences = preferences
         
+        // MARK: - 注入 0：Node.js 环境安全沙盒垫片 (防止第三方 PC 插件调用 require/fs 触发崩溃)
+        let nodeShimSource = """
+        (function() {
+            if (typeof window.require === 'undefined') {
+                window.require = function(mod) {
+                    if (mod === 'fs') {
+                        return {
+                            existsSync: function() { return false; },
+                            readFileSync: function() { return null; },
+                            writeFileSync: function() {},
+                            mkdirSync: function() {},
+                            unlinkSync: function() {},
+                            readdirSync: function() { return []; },
+                            statSync: function() { return { isDirectory: function() { return false; } }; }
+                        };
+                    }
+                    if (mod === 'path') {
+                        return {
+                            join: function() { return Array.from(arguments).join('/'); },
+                            dirname: function(p) { return p ? p.substring(0, p.lastIndexOf('/')) : ''; },
+                            basename: function(p) { return p ? p.substring(p.lastIndexOf('/') + 1) : ''; },
+                            extname: function(p) { return p ? p.substring(p.lastIndexOf('.')) : ''; }
+                        };
+                    }
+                    return {};
+                };
+            }
+            if (typeof window.process === 'undefined') {
+                window.process = {
+                    platform: 'darwin',
+                    mainModule: { filename: 'index.html' }
+                };
+            }
+        })();
+        """
+        let nodeShimScript = WKUserScript(source: nodeShimSource, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+        configuration.userContentController.addUserScript(nodeShimScript)
+        
         // MARK: - 注入 1：在 DOM 加载最早阶段注入 stbvorbis 软解内核
         let vorbisScript = WKUserScript(source: EmuScriptAssets.stbvorbisScript, injectionTime: .atDocumentStart, forMainFrameOnly: true)
         configuration.userContentController.addUserScript(vorbisScript)
@@ -33,42 +71,78 @@ struct GameWebView: UIViewRepresentable {
                 };
             }
             
-            // 2. AudioContext decodeAudioData 拦截：iOS 原生失败时无缝启用 stbvorbis 软解生成真实 PCM AudioBuffer
+            // 2. 检测 ArrayBuffer 是否为 OGG 容器 (前 4 字节为 "OggS")
+            function isOggBuffer(buf) {
+                if (!buf || buf.byteLength < 4) return false;
+                try {
+                    const v = new Uint8Array(buf, 0, 4);
+                    return v[0] === 0x4F && v[1] === 0x67 && v[2] === 0x67 && v[3] === 0x53;
+                } catch(e) {
+                    return false;
+                }
+            }
+            
+            // 3. AudioContext decodeAudioData 智能分流解码：
+            // 对于 OGG 文件直接使用 stbvorbis 软解（避免 iOS 原生 decode 导致 buffer 剥离损坏或静音报红崩溃）
             const AudioCtx = window.AudioContext || window.webkitAudioContext;
             if (AudioCtx && AudioCtx.prototype) {
                 const origDecode = AudioCtx.prototype.decodeAudioData;
                 AudioCtx.prototype.decodeAudioData = function(buffer, success, error) {
+                    const self = this;
                     return new Promise((resolve, reject) => {
-                        origDecode.call(this, buffer, (decoded) => {
-                            if (success) success(decoded);
-                            resolve(decoded);
-                        }, (err) => {
-                            // 原生解码失败（iOS 无法硬解 OGG Vorbis），调度 stbvorbis WebAssembly 软解引擎
-                            if (window.stbvorbis && window.stbvorbis.decode) {
-                                window.stbvorbis.decode(buffer).then((result) => {
-                                    const channels = result.data.length;
-                                    const length = result.data[0].length;
-                                    const sampleRate = result.sampleRate;
-                                    const audioBuf = this.createBuffer(channels, length, sampleRate);
-                                    for (let i = 0; i < channels; i++) {
-                                        if (audioBuf.copyToChannel) {
-                                            audioBuf.copyToChannel(result.data[i], i);
-                                        } else {
-                                            audioBuf.getChannelData(i).set(result.data[i]);
-                                        }
-                                    }
-                                    if (success) success(audioBuf);
-                                    resolve(audioBuf);
-                                }).catch((stbErr) => {
-                                    console.error('[Emu Audio] stbvorbis 软解失败:', stbErr);
-                                    if (error) error(stbErr);
-                                    reject(stbErr);
-                                });
-                            } else {
+                        const fallbackSilent = (err) => {
+                            try {
+                                const fallbackBuf = self.createBuffer(2, Math.max(1, self.sampleRate * 0.1), self.sampleRate || 44100);
+                                if (success) success(fallbackBuf);
+                                resolve(fallbackBuf);
+                            } catch(e) {
                                 if (error) error(err);
                                 reject(err);
                             }
-                        });
+                        };
+                        
+                        // 若是 OGG 格式，直接交由 stbvorbis 解码，保护 ArrayBuffer 完整性
+                        if (isOggBuffer(buffer)) {
+                            if (window.stbvorbis && window.stbvorbis.decode) {
+                                try {
+                                    const copy = buffer.slice ? buffer.slice(0) : buffer;
+                                    window.stbvorbis.decode(copy).then((result) => {
+                                        const channels = result.data.length;
+                                        const length = result.data[0].length;
+                                        const sampleRate = result.sampleRate;
+                                        const audioBuf = self.createBuffer(channels, length, sampleRate);
+                                        for (let i = 0; i < channels; i++) {
+                                            if (audioBuf.copyToChannel) {
+                                                audioBuf.copyToChannel(result.data[i], i);
+                                            } else {
+                                                audioBuf.getChannelData(i).set(result.data[i]);
+                                            }
+                                        }
+                                        if (success) success(audioBuf);
+                                        resolve(audioBuf);
+                                    }).catch((stbErr) => {
+                                        console.warn('[Emu Audio] stbvorbis 软解失败，启用静音兜底保护:', stbErr);
+                                        fallbackSilent(stbErr);
+                                    });
+                                    return;
+                                } catch(e) {
+                                    fallbackSilent(e);
+                                    return;
+                                }
+                            }
+                        }
+                        
+                        // 非 OGG 格式（如 MP3、M4A、WAV），走 iOS 原生硬解
+                        try {
+                            origDecode.call(self, buffer, (decoded) => {
+                                if (success) success(decoded);
+                                resolve(decoded);
+                            }, (err) => {
+                                fallbackSilent(err);
+                            });
+                        } catch(callErr) {
+                            fallbackSilent(callErr);
+                        }
                     });
                 };
             }
@@ -97,7 +171,7 @@ struct GameWebView: UIViewRepresentable {
         let unlockScript = WKUserScript(source: unlockScriptSource, injectionTime: .atDocumentStart, forMainFrameOnly: true)
         configuration.userContentController.addUserScript(unlockScript)
         
-        // MARK: - 注入 4：RPG Maker 引擎级音频嗅探修复与原生磁盘存档双向桥接
+        // MARK: - 注入 4：RPG Maker 引擎级补丁 (防崩溃 + 磁盘存档无缝挂载)
         let engineAndStorageCompatSource = """
         (function() {
             // 视口与黑边修饰
@@ -126,19 +200,20 @@ struct GameWebView: UIViewRepresentable {
             }
             
             const applyEnginePatches = () => {
-                // 1. 音频引擎扩展名修补：移动端强制选用 .ogg，并启用 OGG 标志
+                // 1. 音频引擎安全加固：阻断 YEP_X_CoreUpdatesOpt 等插件因单个音频缺失引发的 checkErrors 全屏红字崩溃
                 if (window.WebAudio) {
                     window.WebAudio.canPlayOgg = function() { return true; };
                 }
                 if (window.AudioManager) {
                     window.AudioManager._canPlayOgg = true;
                     window.AudioManager.audioFileExt = function() { return '.ogg'; };
+                    // 覆写 checkErrors 与 checkWebAudioError，防止无害的音频告警中断整局游戏循环
+                    window.AudioManager.checkErrors = function() {};
+                    window.AudioManager.checkWebAudioError = function() {};
                 }
                 
-                // 2. 存档引擎 StorageManager 磁盘化改造 (MV & MZ 统一适配)
+                // 2. 存档引擎 StorageManager 磁盘挂载（注意：绝不强改 isLocalMode，避免引发第三方插件如 DrillUp 误判）
                 if (window.StorageManager) {
-                    window.StorageManager.isLocalMode = function() { return true; };
-                    
                     // --- MV 模式 Hook ---
                     if (window.StorageManager.localFilePath) {
                         window.StorageManager.localFileDirectoryPath = function() {
@@ -161,7 +236,7 @@ struct GameWebView: UIViewRepresentable {
                             const path = this.localFilePath(savefileId);
                             const res = httpSync('HEAD', '/' + path);
                             if (res.status >= 200 && res.status < 300) return true;
-                            return this.webStorageExists(savefileId);
+                            return this.webStorageExists ? this.webStorageExists(savefileId) : false;
                         };
                         
                         window.StorageManager.loadFromLocalFile = function(savefileId) {
@@ -178,7 +253,7 @@ struct GameWebView: UIViewRepresentable {
                                     return res.text;
                                 }
                             }
-                            return this.loadFromWebStorage(savefileId);
+                            return this.loadFromWebStorage ? this.loadFromWebStorage(savefileId) : null;
                         };
                         
                         window.StorageManager.saveToLocalFile = function(savefileId, json) {
@@ -189,7 +264,7 @@ struct GameWebView: UIViewRepresentable {
                             }
                             httpSync('PUT', '/' + path, data);
                             try {
-                                this.saveToWebStorage(savefileId, json);
+                                if (this.saveToWebStorage) this.saveToWebStorage(savefileId, json);
                             } catch(e) {}
                         };
                         
@@ -197,8 +272,32 @@ struct GameWebView: UIViewRepresentable {
                             const path = this.localFilePath(savefileId);
                             httpSync('DELETE', '/' + path);
                             try {
-                                this.removeWebStorage(savefileId);
+                                if (this.removeWebStorage) this.removeWebStorage(savefileId);
                             } catch(e) {}
+                        };
+                        
+                        // 拦截总入口 load / save / exists，无缝透传到磁盘
+                        const origMvLoad = window.StorageManager.load;
+                        window.StorageManager.load = function(savefileId) {
+                            if (this.localFileExists(savefileId)) {
+                                const localData = this.loadFromLocalFile(savefileId);
+                                if (localData) return localData;
+                            }
+                            return origMvLoad ? origMvLoad.call(this, savefileId) : (this.loadFromWebStorage ? this.loadFromWebStorage(savefileId) : null);
+                        };
+                        
+                        const origMvSave = window.StorageManager.save;
+                        window.StorageManager.save = function(savefileId, json) {
+                            try { this.saveToLocalFile(savefileId, json); } catch(e) {}
+                            if (origMvSave) {
+                                try { origMvSave.call(this, savefileId, json); } catch(e) {}
+                            }
+                        };
+                        
+                        const origMvExists = window.StorageManager.exists;
+                        window.StorageManager.exists = function(savefileId) {
+                            if (this.localFileExists(savefileId)) return true;
+                            return origMvExists ? origMvExists.call(this, savefileId) : (this.webStorageExists ? this.webStorageExists(savefileId) : false);
                         };
                     }
                     
@@ -215,8 +314,8 @@ struct GameWebView: UIViewRepresentable {
                         window.StorageManager.localFileExists = function(saveName) {
                             const path = '/' + this.filePath(saveName);
                             return fetch(path, { method: 'HEAD' })
-                                .then(res => res.ok ? true : this.forageExists(saveName))
-                                .catch(() => this.forageExists(saveName));
+                                .then(res => res.ok ? true : (this.forageExists ? this.forageExists(saveName) : false))
+                                .catch(() => this.forageExists ? this.forageExists(saveName) : false);
                         };
                         
                         window.StorageManager.loadFromLocalFile = function(saveName) {
@@ -226,19 +325,41 @@ struct GameWebView: UIViewRepresentable {
                                     if (!res.ok) throw new Error('File not found');
                                     return res.text();
                                 })
-                                .catch(() => this.loadFromForage(saveName));
+                                .catch(() => this.loadFromForage ? this.loadFromForage(saveName) : null);
                         };
                         
                         window.StorageManager.saveToLocalFile = function(saveName, zip) {
                             const path = '/' + this.filePath(saveName);
                             fetch(path, { method: 'PUT', body: zip }).catch(() => {});
-                            return this.saveToForage(saveName, zip);
+                            return this.saveToForage ? this.saveToForage(saveName, zip) : Promise.resolve();
                         };
                         
                         window.StorageManager.removeLocalFile = function(saveName) {
                             const path = '/' + this.filePath(saveName);
                             fetch(path, { method: 'DELETE' }).catch(() => {});
-                            return this.removeForage(saveName);
+                            return this.removeForage ? this.removeForage(saveName) : Promise.resolve();
+                        };
+                        
+                        const origMzLoadObject = window.StorageManager.loadObject;
+                        window.StorageManager.loadObject = function(saveName) {
+                            const self = this;
+                            return this.localFileExists(saveName).then(exists => {
+                                if (exists) {
+                                    return self.loadFromLocalFile(saveName)
+                                        .then(zip => self.zipToJson(zip))
+                                        .then(json => self.jsonToObject(json));
+                                } else {
+                                    return origMzLoadObject ? origMzLoadObject.call(self, saveName) : Promise.reject();
+                                }
+                            });
+                        };
+                        
+                        const origMzSaveObject = window.StorageManager.saveObject;
+                        window.StorageManager.saveObject = function(saveName, object) {
+                            const self = this;
+                            return this.objectToJson(object)
+                                .then(json => self.jsonToZip(json))
+                                .then(zip => self.saveToLocalFile(saveName, zip));
                         };
                     }
                 }
@@ -257,7 +378,6 @@ struct GameWebView: UIViewRepresentable {
             
             applyEnginePatches();
             window.addEventListener('load', applyEnginePatches);
-            // 多次延迟重试确保覆盖第三方插件或晚加载的脚本
             setTimeout(applyEnginePatches, 100);
             setTimeout(applyEnginePatches, 500);
             setTimeout(applyEnginePatches, 1500);
