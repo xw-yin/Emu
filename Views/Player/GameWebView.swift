@@ -154,15 +154,90 @@ struct GameWebView: UIViewRepresentable {
                     }
                 });
             } catch(e) {}
+
+            // 5. 核心存档安全加固：确保 Game_Map 在 $dataMap 为空时访问 width/height 不崩溃（彻底修复 DrillUp 镜头插件读档崩溃）
+            function patchGameMap(gm) {
+                if (!gm || !gm.prototype) return;
+                try {
+                    gm.prototype.width = function() {
+                        return (window.$dataMap && window.$dataMap.width) ? window.$dataMap.width : 20;
+                    };
+                    gm.prototype.height = function() {
+                        return (window.$dataMap && window.$dataMap.height) ? window.$dataMap.height : 15;
+                    };
+                    gm.prototype.data = function() {
+                        return (window.$dataMap && window.$dataMap.data) ? window.$dataMap.data : [];
+                    };
+                    gm.prototype.isLoopHorizontal = function() {
+                        return (window.$dataMap && window.$dataMap.scrollType) ? (window.$dataMap.scrollType === 2 || window.$dataMap.scrollType === 3) : false;
+                    };
+                    gm.prototype.isLoopVertical = function() {
+                        return (window.$dataMap && window.$dataMap.scrollType) ? (window.$dataMap.scrollType === 1 || window.$dataMap.scrollType === 3) : false;
+                    };
+                } catch(e) {}
+            }
             
-            // 5. 定时巡检保护（在脚本加载前期持续监控补丁状态）
+            let _Game_Map = window.Game_Map;
+            patchGameMap(_Game_Map);
+            try {
+                Object.defineProperty(window, 'Game_Map', {
+                    configurable: true,
+                    enumerable: true,
+                    get: function() { return _Game_Map; },
+                    set: function(val) {
+                        _Game_Map = val;
+                        patchGameMap(_Game_Map);
+                    }
+                });
+            } catch(e) {}
+
+            // 6. 存档数据校验安全加固：保护所有 DrillUp 插件的 checkSysData 不中断读档
+            function patchGameSystem(gs) {
+                if (!gs || !gs.prototype) return;
+                try {
+                    for (const key of Object.getOwnPropertyNames(gs.prototype)) {
+                        if (key.includes('checkSysData') && typeof gs.prototype[key] === 'function' && !gs.prototype[key]._emuWrapped) {
+                            const orig = gs.prototype[key];
+                            const wrapped = function() {
+                                try {
+                                    return orig.apply(this, arguments);
+                                } catch(err) {
+                                    console.warn('[Emu] 拦截并跳过插件存档校验异常 (' + key + '):', err);
+                                }
+                            };
+                            wrapped._emuWrapped = true;
+                            gs.prototype[key] = wrapped;
+                        }
+                    }
+                } catch(e) {}
+            }
+
+            let _Game_System = window.Game_System;
+            patchGameSystem(_Game_System);
+            try {
+                Object.defineProperty(window, 'Game_System', {
+                    configurable: true,
+                    enumerable: true,
+                    get: function() { return _Game_System; },
+                    set: function(val) {
+                        _Game_System = val;
+                        patchGameSystem(_Game_System);
+                    }
+                });
+            } catch(e) {}
+            window._emuPatchGameMap = patchGameMap;
+            window._emuPatchGameSystem = patchGameSystem;
+            
+            // 7. 定时巡检保护（在脚本加载前期持续监控补丁状态）
             const checkTimer = setInterval(function() {
                 if (window.Utils) patchUtils(window.Utils);
                 if (window.SceneManager) patchSceneManager(window.SceneManager);
                 if (window.PluginManager) patchPluginManager(window.PluginManager);
                 if (window.AudioManager) patchAudioManager(window.AudioManager);
+                if (window.Game_Map) patchGameMap(window.Game_Map);
+                if (window.Game_System) patchGameSystem(window.Game_System);
             }, 25);
-            setTimeout(function() { clearInterval(checkTimer); }, 8000);
+            setTimeout(function() { clearInterval(checkTimer); }, 10000);
         })();
         """
         let earlyCompatScript = WKUserScript(source: earlyCompatSource, injectionTime: .atDocumentStart, forMainFrameOnly: true)
@@ -494,7 +569,7 @@ struct GameWebView: UIViewRepresentable {
                     }
                 }
                 
-                // 3. 修复 DataManager 存档所有权校验，确保已有磁盘存档能无障碍显示和继续游戏
+                // 3. 修复 DataManager 存档所有权校验与解包容错，确保已有磁盘存档能无障碍读取与恢复
                 if (window.DataManager) {
                     window.DataManager.isThisGameFile = function(savefileId) {
                         const globalInfo = this.loadGlobalInfo();
@@ -503,7 +578,25 @@ struct GameWebView: UIViewRepresentable {
                         }
                         return false;
                     };
+                    
+                    if (!window.DataManager._emuExtractHooked) {
+                        const origExtract = window.DataManager.extractSaveContents;
+                        window.DataManager.extractSaveContents = function(contents) {
+                            if (window._emuPatchGameMap && window.Game_Map) window._emuPatchGameMap(window.Game_Map);
+                            if (window._emuPatchGameSystem && window.Game_System) window._emuPatchGameSystem(window.Game_System);
+                            try {
+                                if (origExtract) origExtract.call(this, contents);
+                            } catch(err) {
+                                console.warn('[Emu] 捕获 extractSaveContents 异常并安全恢复:', err);
+                            }
+                        };
+                        window.DataManager._emuExtractHooked = true;
+                    }
                 }
+                
+                // 4. 主动应用 Game_Map 与 Game_System 补丁
+                if (window._emuPatchGameMap && window.Game_Map) window._emuPatchGameMap(window.Game_Map);
+                if (window._emuPatchGameSystem && window.Game_System) window._emuPatchGameSystem(window.Game_System);
             };
             
             applyEnginePatches();
