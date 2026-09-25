@@ -1,6 +1,24 @@
 import SwiftUI
 import WebKit
 
+// Notify the page after rotation/layout settles, not at an intermediate size.
+final class GameViewportWebView: WKWebView {
+    private var previousSize: CGSize = .zero
+    private var resizeWork: DispatchWorkItem?
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard bounds.width > 0, bounds.height > 0, bounds.size != previousSize else { return }
+        previousSize = bounds.size
+        resizeWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.evaluateJavaScript("window.__emuRefreshViewport?.()", completionHandler: nil)
+        }
+        resizeWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
+    }
+}
+
 /// 经过特化配置的高性能游戏 WebKit 容器（全面集成 OGG 软解内核、WebAudio 激活层与 原生磁盘存档桥接）
 struct GameWebView: UIViewRepresentable {
     let url: URL
@@ -125,11 +143,12 @@ struct GameWebView: UIViewRepresentable {
         
         configuration.userContentController.add(context.coordinator, name: "emuLog")
         
-        let webView = WKWebView(frame: .zero, configuration: configuration)
+        let webView = GameViewportWebView(frame: .zero, configuration: configuration)
         webView.backgroundColor = .black
         webView.isOpaque = false
         webView.scrollView.isScrollEnabled = false
         webView.scrollView.bounces = false
+        webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.navigationDelegate = context.coordinator
         
         DispatchQueue.main.async {

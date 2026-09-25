@@ -204,7 +204,10 @@ struct VirtualControllerOverlay: View {
             } label: {
                 Label("日志", systemImage: "terminal")
                     .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(Color.cyan)
                     .padding(8)
+                    .background(.ultraThinMaterial)
+                    .clipShape(Capsule())
             }
             .accessibilityLabel("查看和复制游戏日志")
 
@@ -213,6 +216,8 @@ struct VirtualControllerOverlay: View {
                     .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(keepScreenAwake ? Color.yellow : Color.white)
                     .padding(8)
+                    .background(.ultraThinMaterial)
+                    .clipShape(Capsule())
             }
             // 虚拟按键显隐切换
             Button(action: {

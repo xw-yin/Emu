@@ -51,6 +51,30 @@ function mz(env) {
     return env.ctx.StorageManager;
 }
 
+test('RPG viewport replaces fixed page width and refreshes engine after settled rotation', () => {
+    const env = environment();
+    const meta = {content: 'width=816'};
+    let resized = 0;
+    env.ctx.document.head = {};
+    env.ctx.document.querySelector = () => meta;
+    env.ctx.Utils = {RPGMAKER_NAME: 'MV'};
+    env.ctx.innerWidth = 390; env.ctx.innerHeight = 844;
+    env.ctx.Graphics = {_canvas: {}, width: 816, height: 624, _onWindowResize() { resized++; }};
+    env.ctx.__emuInstallRuntime();
+    assert.match(meta.content, /width=device-width/);
+    assert.match(meta.content, /initial-scale=1/);
+    env.ctx.innerWidth = 844; env.ctx.innerHeight = 390;
+    env.ctx.__emuRefreshViewport();
+    assert.equal(resized, 1);
+    assert.equal(env.ctx.Graphics.width, 816);
+    assert.equal(env.ctx.Graphics.height, 624);
+    env.ctx.__emuInstallRuntime();
+    assert.equal(env.events.get('orientationchange').length, 1);
+    env.ctx.innerWidth = 0;
+    env.ctx.__emuRefreshViewport();
+    assert.equal(resized, 1, 'ignore transient zero bounds');
+});
+
 function keyboardEnvironment() {
     const env = environment();
     const events = [];

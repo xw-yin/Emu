@@ -70,8 +70,12 @@ struct GameLogConsoleOverlay: View {
                                 .clipShape(RoundedRectangle(cornerRadius: 6))
                                 
                                 if logManager.errorCount > 0 {
+                                    Button {
+                                        logManager.errorsOnly.toggle()
+                                        logManager.followsLatest = false
+                                    } label: {
                                     HStack(spacing: 4) {
-                                        Text("异常")
+                                        Text(logManager.errorsOnly ? "仅错误" : "错误")
                                             .font(.system(size: 10))
                                             .foregroundStyle(.secondary)
                                         Text("\(logManager.errorCount)")
@@ -80,8 +84,11 @@ struct GameLogConsoleOverlay: View {
                                     }
                                     .padding(.horizontal, 6)
                                     .padding(.vertical, 3)
-                                    .background(Color.red.opacity(0.15))
+                                    .background(Color.red.opacity(logManager.errorsOnly ? 0.4 : 0.15))
                                     .clipShape(RoundedRectangle(cornerRadius: 6))
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel(logManager.errorsOnly ? "显示全部日志" : "只显示错误日志")
                                 }
                                 
                                 // 最小化按钮
@@ -118,6 +125,9 @@ struct GameLogConsoleOverlay: View {
                         
                         HStack {
                             Button("复制全部") { UIPasteboard.general.string = logManager.exportedText }
+                            if logManager.errorsOnly {
+                                Button("复制错误") { UIPasteboard.general.string = logManager.filteredText }
+                            }
                             Spacer()
                             Toggle("跟随最新", isOn: $logManager.followsLatest)
                                 .fixedSize()
@@ -130,7 +140,11 @@ struct GameLogConsoleOverlay: View {
                         ScrollViewReader { scrollProxy in
                             ScrollView(.vertical, showsIndicators: true) {
                                 LazyVStack(alignment: .leading, spacing: 4) {
-                                    ForEach(logManager.retainedLogs) { item in
+                                    if logManager.visibleLogs.isEmpty {
+                                        Text(logManager.errorsOnly ? "暂无保留的错误日志" : "暂无日志")
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    ForEach(logManager.visibleLogs) { item in
                                         HStack(alignment: .top, spacing: 6) {
                                             Text(logManager.formatTime(item.timestamp))
                                                 .font(.system(size: 10, design: .monospaced))
@@ -158,7 +172,7 @@ struct GameLogConsoleOverlay: View {
                                 .padding(.vertical, 8)
                             }
                             .onChange(of: logManager.logs.last?.id) { _ in
-                                if logManager.followsLatest, let last = logManager.logs.last {
+                                if logManager.followsLatest, let last = logManager.visibleLogs.last {
                                     withAnimation(.easeOut(duration: 0.1)) {
                                         scrollProxy.scrollTo(last.id, anchor: .bottom)
                                     }

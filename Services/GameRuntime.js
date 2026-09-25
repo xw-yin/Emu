@@ -310,6 +310,36 @@
         wrapped.__emuObserved = true;
         object[name] = wrapped;
     }
+    let viewportInstalled = false;
+    let resizeTimer;
+    window.__emuRefreshViewport = () => {
+        const graphics = window.Graphics;
+        if (!graphics || !graphics._canvas || !window.innerWidth || !window.innerHeight) return;
+        // Keep engine resolution and plugin resize hooks; only refresh its display
+        // fit after WebKit has the final viewport dimensions.
+        if (typeof graphics._onWindowResize === 'function') graphics._onWindowResize();
+    };
+    function scheduleViewportRefresh() {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(window.__emuRefreshViewport, 250);
+    }
+    function installViewport() {
+        if (viewportInstalled || !window.Graphics || !document.head || !window.Utils?.RPGMAKER_NAME) return;
+        let meta = document.querySelector('meta[name="viewport"]');
+        if (!meta) {
+            meta = document.createElement('meta');
+            meta.name = 'viewport';
+            document.head.appendChild(meta);
+        }
+        // A fixed-width layout viewport plus WebKit page zoom competes with the
+        // RPG engine's own canvas scaling when the device rotates.
+        meta.content = 'width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover';
+        viewportInstalled = true;
+        window.addEventListener('resize', scheduleViewportRefresh);
+        window.addEventListener('orientationchange', scheduleViewportRefresh);
+        window.visualViewport?.addEventListener('resize', scheduleViewportRefresh);
+        scheduleViewportRefresh();
+    }
     const heldKeys = new Map();
     function keyNumber(key, code) {
         if (/^Key[A-Z]$/.test(code)) return code.charCodeAt(3);
@@ -395,6 +425,7 @@
     }
     function install() {
         installStorage();
+        installViewport();
         wrap(window.Input, 'update', original => function (...args) {
             const result = original.apply(this, args);
             for (const [code, entry] of heldKeys) {

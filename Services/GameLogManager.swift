@@ -49,6 +49,7 @@ final class GameLogManager: ObservableObject {
     @Published var isCollapsed = false
     @Published var followsLatest = true
     @Published var manuallyOpened = false
+    @Published var errorsOnly = false
     @Published private var startupLogs: [LogItem] = []
     private let maxLogCount = 2000
 
@@ -59,6 +60,14 @@ final class GameLogManager: ObservableObject {
 
     var exportedText: String {
         retainedLogs.map { "[\(formatTime($0.timestamp))] [\($0.level.tag)] \($0.message)" }.joined(separator: "\n")
+    }
+
+    var visibleLogs: [LogItem] {
+        errorsOnly ? retainedLogs.filter { $0.level == .error } : retainedLogs
+    }
+
+    var filteredText: String {
+        visibleLogs.map { "[\(formatTime($0.timestamp))] [\($0.level.tag)] \($0.message)" }.joined(separator: "\n")
     }
 
     func preserveStartupLogs() { startupLogs = logs }
@@ -81,6 +90,7 @@ final class GameLogManager: ObservableObject {
         logs.removeAll()
         startupLogs.removeAll()
         manuallyOpened = false
+        errorsOnly = false
         followsLatest = true
         isCollapsed = false
         loadedCount = 0
