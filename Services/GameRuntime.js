@@ -116,16 +116,19 @@
         const key = String(id).replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, 64) || 'custom';
         return 'plugin_' + key + '.rpgsave';
     }
-    function readMV(id) {
-        const name = mvName(id);
-        if (!has(name)) return null;
+    function readRaw(name) {
         const raw = cache[name];
-        const trimmed = raw.trim();
+        const trimmed = String(raw).trim();
         const json = /^[\[{]/.test(trimmed) ? trimmed : window.LZString.decompressFromBase64(raw);
         if (!json) throw new Error('存档解压失败: ' + name);
         // Validate here so corrupt config/global data gets a filename in the log.
         try { JSON.parse(json); } catch (_) { throw new Error('存档 JSON 无效: ' + name); }
         return json;
+    }
+    function readMV(id) {
+        const name = mvName(id);
+        if (!has(name)) return null;
+        return readRaw(name);
     }
     function migrateMV(sm) {
         // Old versions also saved to shared browser keys. Only import entries
@@ -230,6 +233,76 @@
         log('info', sm.__emuStorage + ' 磁盘存档接口已安装');
     }
 
+    // 读档诊断：只读、不写盘、不泄露存档正文。标题画面就绪后自动跑一次，
+    // 用户也可在控制台手动调用 window.__emuSaveDiag()。
+    function saveDiag() {
+        const report = {engine: window.Utils?.RPGMAKER_NAME || null, files: [], game: null, slots: []};
+        try {
+            for (const name of Object.keys(cache).sort()) {
+                const entry = {name, size: String(cache[name]).length, stage: 'ok'};
+                try {
+                    const data = JSON.parse(readRaw(name));
+                    if (name === 'global.rpgsave') {
+                        entry.kind = 'global-index';
+                        entry.isArray = Array.isArray(data);
+                        if (Array.isArray(data)) {
+                            entry.slots = data.map((s, i) => s ? {
+                                id: i, title: s.title ?? null, globalId: s.globalId ?? null,
+                                hasChars: Array.isArray(s.characters), playtime: s.playtime ?? null
+                            } : null).filter(Boolean);
+                        }
+                    } else if (/^file\d+\.rpgsave$/.test(name)) {
+                        entry.kind = 'savefile';
+                        entry.topKeys = data && typeof data === 'object' ? Object.keys(data).slice(0, 12) : null;
+                    } else {
+                        entry.kind = 'other';
+                    }
+                } catch (error) { entry.stage = 'error'; entry.error = describe(error).slice(0, 200); }
+                report.files.push(entry);
+            }
+            const dm = window.DataManager, sm = window.StorageManager;
+            const existsConsistent = !!sm && [0, 1, 5].every(id => {
+                try { return !!sm.exists?.(id) === has(mvName(id)); } catch (_) { return false; }
+            });
+            report.game = {
+                title: window.$dataSystem?.gameTitle ?? null,
+                globalId: dm?._globalId ?? null,
+                storage: sm?.__emuStorage || null,
+                // 插件可能在我们之后又替换掉 StorageManager 接口（如走 localStorage 的云存档插件）
+                loadFn: !sm ? null : (sm.load === readMV ? 'emu' : String(sm.load?.name || typeof sm.load)),
+                existsConsistent,
+                saveFn: !sm ? null : String(sm.save?.name || typeof sm.save)
+            };
+            try {
+                const webKeys = [];
+                for (const k of ['RPG Global', 'RPG Config', 'RPG File1', 'RPG File2', 'RPG File3', 'RPG File4', 'RPG File5']) {
+                    if (localStorage.getItem(k) !== null) webKeys.push(k);
+                }
+                report.webStorageKeys = webKeys;
+            } catch (_) { report.webStorageKeys = 'unreadable'; }
+            const max = typeof dm?.maxSavefiles === 'function' ? dm.maxSavefiles() : 20;
+            for (let id = 1; id <= max; id++) {
+                const slot = {id};
+                try { slot.exists = !!sm?.exists?.(id); }
+                catch (error) { slot.exists = 'error: ' + describe(error).slice(0, 120); }
+                try {
+                    const info = dm?.loadSavefileInfo?.(id);
+                    slot.info = info ? {title: info.title ?? null, globalId: info.globalId ?? null} : null;
+                } catch (error) { slot.info = 'error: ' + describe(error).slice(0, 120); }
+                try { slot.thisGame = !!dm?.isThisGameFile?.(id); }
+                catch (error) { slot.thisGame = 'error: ' + describe(error).slice(0, 120); }
+                report.slots.push(slot);
+            }
+        } catch (error) { report.fatal = describe(error).slice(0, 200); }
+        return report;
+    }
+    let diagDone = false;
+    window.__emuSaveDiag = () => {
+        const report = saveDiag();
+        log('warning', '存档诊断: ' + JSON.stringify(report));
+        return report;
+    };
+
     function wrap(object, name, make) {
         const original = object?.[name];
         if (typeof original !== 'function' || original.__emuObserved) return;
@@ -274,6 +347,10 @@
         if (!ready && started && name && name !== 'Scene_Boot' && name !== 'Scene_Splash' && !manager._stopped) {
             ready = true;
             log('ready', name);
+            if (!diagDone && window.DataManager && window.StorageManager) {
+                diagDone = true;
+                try { window.__emuSaveDiag(); } catch (_) { /* diagnostic only, never block the game */ }
+            }
         }
     }, 100);
     // A diagnostic timeout reports state; it never forces an unready scene ahead.
