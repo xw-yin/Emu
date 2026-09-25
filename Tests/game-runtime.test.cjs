@@ -51,6 +51,30 @@ function mz(env) {
     return env.ctx.StorageManager;
 }
 
+test('Drill title globals read directory snapshot and persist through MV journal', async () => {
+    const env = environment({saves: {'drill_global.rpgsave': '{"TTG":{"global_visibleTank":[false,true]}}'}});
+    const sm = mv(env);
+    sm.drill_COGS_loadFromWebStorage = () => 'shared browser data';
+    sm.drill_COGS_saveToWebStorage = () => { throw new Error('must not use shared keys'); };
+    env.ctx.__emuInstallRuntime();
+    const settings = {url_type: '当前游戏根目录', url_path: 'save/', name: 'drill_global', suffix: 'rpgsave'};
+    assert.deepEqual(JSON.parse(sm.drill_COGS_loadFromWebStorage(settings)).TTG.global_visibleTank, [false, true]);
+    sm.drill_COGS_saveToWebStorage(settings, '{"TTG":{"global_visibleTank":[true,false]}}');
+    await tick();
+    assert.equal(env.requests[0].url, '/save/drill_global.rpgsave');
+    assert.deepEqual(JSON.parse(sm.drill_COGS_loadFromWebStorage(settings)).TTG.global_visibleTank, [true, false]);
+});
+test('MV animated tiling bitmap invalidates PIXI canvas pattern and retains original refresh', () => {
+    const env = environment();
+    env.ctx.TilingSprite = function () { this._canvasPattern = 'frame 1'; };
+    env.ctx.TilingSprite.prototype._onBitmapLoad = function () { this.refreshed = true; };
+    env.ctx.__emuInstallRuntime();
+    const sprite = new env.ctx.TilingSprite();
+    sprite._onBitmapLoad();
+    assert.equal(sprite._canvasPattern, null);
+    assert.equal(sprite.refreshed, true);
+});
+
 test('RPG viewport replaces fixed page width and refreshes engine after settled rotation', () => {
     const env = environment();
     const meta = {content: 'width=816'};

@@ -426,6 +426,32 @@
     function install() {
         installStorage();
         installViewport();
+        // MV + PIXI 4 Canvas keeps a pattern from the previous tiling bitmap.
+        // Animated title frames change bitmaps but MV only resets tilingTexture.
+        wrap(window.TilingSprite?.prototype, '_onBitmapLoad', original => function (...args) {
+            this._canvasPattern = null;
+            return original.apply(this, args);
+        });
+        // Drill global files bypass MV's ordinary load/save methods. Install
+        // immediately after its core plugin, before title plugins read visibility.
+        const sm = window.StorageManager;
+        const drillName = settings => {
+            if (settings?.url_type !== '当前游戏根目录' || !/^save\/?$/.test(settings.url_path) ||
+                settings.suffix !== 'rpgsave') return null;
+            return validName(settings.name + '.rpgsave').toLowerCase();
+        };
+        wrap(sm, 'drill_COGS_loadFromWebStorage', original => function (settings) {
+            const name = drillName(settings);
+            if (!name) return original.call(this, settings);
+            // Do not read shared browser keys from another game's Drill plugins.
+            return has(name) ? readRaw(name) : '';
+        });
+        wrap(sm, 'drill_COGS_saveToWebStorage', original => function (settings, json) {
+            const name = drillName(settings);
+            if (!name) return original.call(this, settings, json);
+            JSON.parse(json);
+            writeMV(name, window.LZString.compressToBase64(json));
+        });
         wrap(window.Input, 'update', original => function (...args) {
             const result = original.apply(this, args);
             for (const [code, entry] of heldKeys) {

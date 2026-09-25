@@ -555,8 +555,22 @@ final class LocalGameServer: ObservableObject {
         }
         
         // Install synchronously after the managers are defined, before plugins/main.
-        if ["rpg_managers.js", "rmmz_managers.js"].contains(targetFileURL.lastPathComponent.lowercased()) {
+        if ["rpg_managers.js", "rmmz_managers.js", "drill_coreofglobalsave.js"].contains(targetFileURL.lastPathComponent.lowercased()) {
             fileData.append(Data("\n;window.__emuInstallRuntime && window.__emuInstallRuntime();\n".utf8))
+        }
+
+        if targetFileURL.lastPathComponent.lowercased() == "drill_dialogcharouterglow.js",
+           var source = String(data: fileData, encoding: .utf8) {
+            // This plugin version stores a one-based default as a zero-based index.
+            // Match the known implementation exactly; leave other versions alone.
+            let brokenDefault = "DrillUp.g_DCOG_shadowColorIndex = Number(DrillUp.parameters[\"默认外发光颜色ID(全局)\"] || 1);"
+            if source.contains(brokenDefault) {
+                source = source.replacingOccurrences(of: brokenDefault, with:
+                    "DrillUp.g_DCOG_shadowColorIndex = Number(DrillUp.parameters[\"默认外发光颜色ID(全局)\"] || 1) - 1;")
+                source = source.replacingOccurrences(of: "if( color_index == 0 ){ color_index = 11; }", with:
+                    "if( !DrillUp.g_DCOG_color_list[color_index] || !DrillUp.g_DCOG_color_list[color_index].color ){ color_index = DrillUp.g_DCOG_shadowColorIndex; }")
+                fileData = Data(source.utf8)
+            }
         }
 
         let totalCount = fileData.count
