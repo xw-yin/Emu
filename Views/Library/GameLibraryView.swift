@@ -8,6 +8,8 @@ struct GameLibraryView: View {
     @State private var isImporting: Bool = false
     @State private var importErrorMessage: String? = nil
     @State private var showImportError: Bool = false
+    @State private var gamePendingRemoval: Game? = nil
+    @State private var showRemoveDialog: Bool = false
     
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.verticalSizeClass) private var verticalSizeClass
@@ -47,6 +49,15 @@ struct GameLibraryView: View {
                                 ForEach(libraryManager.games) { game in
                                     GameCardView(game: game) {
                                         selectedGame = game
+                                    }
+                                    .contextMenu {
+                                        Button(role: .destructive) {
+                                            HapticManager.shared.buttonPress()
+                                            gamePendingRemoval = game
+                                            showRemoveDialog = true
+                                        } label: {
+                                            Label("从游戏库移除", systemImage: "trash")
+                                        }
                                     }
                                 }
                             }
@@ -139,6 +150,15 @@ struct GameLibraryView: View {
             Button("确定", role: .cancel) {}
         } message: {
             Text(importErrorMessage ?? "未知错误")
+        }
+        .confirmationDialog("移除游戏", isPresented: $showRemoveDialog, presenting: gamePendingRemoval) { game in
+            Button("从游戏库移除", role: .destructive) {
+                HapticManager.shared.buttonPress()
+                libraryManager.removeGame(game)
+            }
+            Button("取消", role: .cancel) {}
+        } message: { game in
+            Text("将「\(game.title)」从游戏库中移除，仅删除库内条目，不会删除任何游戏文件。")
         }
     }
     

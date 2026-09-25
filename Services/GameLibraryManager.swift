@@ -10,6 +10,7 @@ final class GameLibraryManager: ObservableObject {
     
     private let gamesDirectoryName = "Games"
     private let externalGamesKey = "com.emu.external_games_v1"
+    private let ignoredSandboxGamesKey = "com.emu.ignored_sandbox_games_v1"
     private var activeSecurityScopedURL: URL?
     
     private var gamesDirectoryURL: URL {
@@ -121,6 +122,7 @@ final class GameLibraryManager: ObservableObject {
     private func scanSandboxGames() -> [Game] {
         var scanned: [Game] = []
         let fileManager = FileManager.default
+        let ignored = ignoredSandboxGameNames()
         guard let contents = try? fileManager.contentsOfDirectory(at: gamesDirectoryURL, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) else {
             return []
         }
@@ -128,6 +130,7 @@ final class GameLibraryManager: ObservableObject {
         for folder in contents {
             var isDir: ObjCBool = false
             if fileManager.fileExists(atPath: folder.path, isDirectory: &isDir), isDir.boolValue {
+                if ignored.contains(folder.lastPathComponent) { continue }
                 if let gameRoot = findGameRoot(within: folder) {
                     let engine = detectEngine(at: gameRoot)
                     let title = extractGameTitle(from: gameRoot) ?? folder.lastPathComponent
@@ -161,6 +164,25 @@ final class GameLibraryManager: ObservableObject {
         if let data = try? JSONEncoder().encode(list) {
             UserDefaults.standard.set(data, forKey: externalGamesKey)
         }
+    }
+    
+    /// 从游戏库中移除条目：仅删除库内记录，不删除任何游戏文件。
+    /// 外部游戏删除持久化书签条目；沙盒游戏记入忽略名单（扫描时跳过）。
+    func removeGame(_ game: Game) {
+        if game.isExternalStorage {
+            var saved = loadSavedExternalGames()
+            saved.removeAll { $0.id == game.id }
+            saveExternalGames(saved)
+        } else {
+            var ignored = ignoredSandboxGameNames()
+            ignored.insert(game.rootDirectoryName)
+            UserDefaults.standard.set(Array(ignored), forKey: ignoredSandboxGamesKey)
+        }
+        loadGames()
+    }
+    
+    private func ignoredSandboxGameNames() -> Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: ignoredSandboxGamesKey) ?? [])
     }
     
     private func findGameRoot(within folder: URL) -> URL? {
