@@ -51,6 +51,67 @@ function mz(env) {
     return env.ctx.StorageManager;
 }
 
+function keyboardEnvironment() {
+    const env = environment();
+    const events = [];
+    env.ctx.KeyboardEvent = class { constructor(type, values) { this.type = type; Object.assign(this, values); } };
+    const input = {keyMapper: {13: 'ok', 37: 'left', 16: 'shift'}, _currentState: {},
+        update() { this.sample = {...this._currentState}; }};
+    env.ctx.Input = input;
+    env.ctx.document.dispatchEvent = event => {
+        events.push(event);
+        input._currentState[input.keyMapper[event.keyCode]] = event.type === 'keydown';
+    };
+    env.ctx.__emuInstallRuntime();
+    return {env, input, events, send: env.ctx.__emuKeyEvent};
+}
+test('virtual quick tap survives until engine samples it, then releases exactly once', () => {
+    const {env, input, events, send} = keyboardEnvironment();
+    send('Enter', 'Enter', true);
+    send('Enter', 'Enter', false);
+    assert.equal(events.length, 1);
+    input.update();
+    assert.equal(input.sample.ok, true);
+    assert.equal(input._currentState.ok, false);
+    assert.deepEqual(events.map(e => e.type), ['keydown', 'keyup']);
+    input.update();
+    assert.equal(input.sample.ok, false);
+    env.ctx.__emuReleaseKeys();
+    assert.equal(events.length, 2);
+});
+test('virtual hold, modifiers, custom quotes and forced cancellation preserve key identity', () => {
+    const {env, input, events, send} = keyboardEnvironment();
+    send('Shift', 'ShiftLeft', true);
+    send('ArrowLeft', 'ArrowLeft', true);
+    send('ArrowLeft', 'ArrowLeft', true);
+    input.update(); input.update();
+    assert.equal(input.sample.left, true);
+    assert.equal(events.length, 2);
+    assert.equal(events[1].shiftKey, true);
+    send("'", 'Quote', true);
+    assert.equal(events.at(-1).keyCode, 222);
+    assert.equal(events.at(-1).key, "'");
+    env.ctx.__emuReleaseKeys();
+    assert.equal(input._currentState.left, false);
+    assert.equal(input._currentState.shift, false);
+    assert.equal(events.filter(e => e.type === 'keyup').length, 3);
+});
+test('virtual keyboard maps all letter, digit, function and default controller keys', () => {
+    const {env, events, send} = keyboardEnvironment();
+    const cases = [
+        ...Array.from({length: 26}, (_, i) => [String.fromCharCode(97 + i), 'Key' + String.fromCharCode(65 + i), 65 + i]),
+        ...Array.from({length: 10}, (_, i) => [String(i), 'Digit' + i, 48 + i]),
+        ...Array.from({length: 12}, (_, i) => ['F' + (i + 1), 'F' + (i + 1), 112 + i]),
+        ['Enter', 'Enter', 13], ['Escape', 'Escape', 27], [' ', 'Space', 32],
+        ['Tab', 'Tab', 9], ['ArrowUp', 'ArrowUp', 38], ['ArrowDown', 'ArrowDown', 40]
+    ];
+    for (const [key, code, number] of cases) {
+        send(key, code, true);
+        assert.equal(events.at(-1).keyCode, number, code);
+        env.ctx.__emuReleaseKeys();
+    }
+});
+
 test('MV config/global/file are available on the first read, without a fetch race', () => {
     const env = environment({saves: {'config.rpgsave': '{"alwaysDash":true}', 'global.rpgsave': '[null,{"title":"test"}]', 'file1.rpgsave': 'zip:{"system":{}}'}});
     const sm = mv(env);

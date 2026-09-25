@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 
 /// 游戏加载与运行实时日志管理器（支持从原生服务器和 WebKit JavaScript 核心双向收集日志）
 final class GameLogManager: ObservableObject {
@@ -45,7 +46,29 @@ final class GameLogManager: ObservableObject {
     @Published var errorCount: Int = 0
     @Published var isGameReady: Bool = false
     
-    private let maxLogCount = 120
+    @Published var isCollapsed = false
+    @Published var followsLatest = true
+    @Published var manuallyOpened = false
+    @Published private var startupLogs: [LogItem] = []
+    private let maxLogCount = 2000
+
+    var retainedLogs: [LogItem] {
+        let startupIDs = Set(startupLogs.map(\.id))
+        return startupLogs + logs.filter { !startupIDs.contains($0.id) }
+    }
+
+    var exportedText: String {
+        retainedLogs.map { "[\(formatTime($0.timestamp))] [\($0.level.tag)] \($0.message)" }.joined(separator: "\n")
+    }
+
+    func preserveStartupLogs() { startupLogs = logs }
+
+    func openConsole() {
+        manuallyOpened = true
+        followsLatest = false
+        isCollapsed = false
+        isVisible = true
+    }
     private let timeFormatter: DateFormatter = {
         let df = DateFormatter()
         df.dateFormat = "HH:mm:ss.SS"
@@ -56,6 +79,10 @@ final class GameLogManager: ObservableObject {
     
     func reset() {
         logs.removeAll()
+        startupLogs.removeAll()
+        manuallyOpened = false
+        followsLatest = true
+        isCollapsed = false
         loadedCount = 0
         errorCount = 0
         isGameReady = false

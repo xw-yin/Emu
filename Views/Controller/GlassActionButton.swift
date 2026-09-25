@@ -7,6 +7,7 @@ struct GlassActionButton: View {
     let primaryColor: Color
     let onStateChange: (Bool) -> Void
     
+    @GestureState private var gestureActive = false
     @State private var isPressed: Bool = false
     
     var body: some View {
@@ -55,6 +56,7 @@ struct GlassActionButton: View {
         }
         .simultaneousGesture(
             DragGesture(minimumDistance: 0)
+                .updating($gestureActive) { _, active, _ in active = true }
                 .onChanged { _ in
                     if !isPressed {
                         isPressed = true
@@ -68,6 +70,12 @@ struct GlassActionButton: View {
                     onStateChange(false)
                 }
         )
+        .onChange(of: gestureActive) { active in
+            if !active && isPressed { isPressed = false; onStateChange(false) }
+        }
+        .onDisappear {
+            if isPressed { isPressed = false; onStateChange(false) }
+        }
         .animation(.interactiveSpring(response: 0.22, dampingFraction: 0.58), value: isPressed)
     }
 }

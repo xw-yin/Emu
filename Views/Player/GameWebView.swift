@@ -184,10 +184,11 @@ struct GameWebView: UIViewRepresentable {
                 
                 if levelStr == "ready" || levelStr == "pageReady" {
                     GameLogManager.shared.isGameReady = true
+                    GameLogManager.shared.preserveStartupLogs()
                     GameLogManager.shared.log("🎮 \(msg)", level: .success)
                     hideWorkItem?.cancel()
                     let work = DispatchWorkItem { [weak self] in
-                        guard self?.isActive == true, GameLogManager.shared.errorCount == 0 else { return }
+                        guard self?.isActive == true, GameLogManager.shared.errorCount == 0, !GameLogManager.shared.manuallyOpened else { return }
                         withAnimation(.easeOut(duration: 0.6)) {
                             GameLogManager.shared.isVisible = false
                         }

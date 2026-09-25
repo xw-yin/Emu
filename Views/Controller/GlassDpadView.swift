@@ -11,6 +11,7 @@ enum DpadDirection: String, CaseIterable {
 struct GlassDpadView: View {
     let onDirectionChanged: (DpadDirection?, Bool) -> Void
     
+    @GestureState private var gestureActive = false
     @State private var activeDirection: DpadDirection? = nil
     @State private var touchLocation: CGPoint = .zero
     @State private var isTouching: Bool = false
@@ -59,6 +60,7 @@ struct GlassDpadView: View {
         }
         .gesture(
             DragGesture(minimumDistance: 0)
+                .updating($gestureActive) { _, active, _ in active = true }
                 .onChanged { value in
                     handleTouch(location: value.location)
                 }
@@ -66,6 +68,8 @@ struct GlassDpadView: View {
                     releaseTouch()
                 }
         )
+        .onChange(of: gestureActive) { active in if !active { releaseTouch() } }
+        .onDisappear { releaseTouch() }
     }
     
     @ViewBuilder

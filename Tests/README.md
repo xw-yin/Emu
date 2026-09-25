@@ -52,6 +52,15 @@ create and remove their own temporary directory.
 
 ## Device checks still required
 
+The virtual keyboard checks cover quick taps sampled on the next engine update,
+holds, cancellation, modifiers and the registered letter/digit/function keys.
+On device, also check simultaneous direction + action, sliding between directions,
+background/resume, hiding controls and opening the key editor while holding a key.
+Use the toolbar log button after startup: select/copy a line, copy all, and toggle
+follow-latest while new logs arrive. Startup logs (up to 2,000 entries) are retained
+separately from the rolling 2,000 runtime entries for the current game session.
+Toggle keep-awake, background the app, and exit to confirm idle-timer restoration.
+
 Open the affected game, reach the title, load an existing PC save, make a new save,
 reload the page, then exit/reopen and load it again. Repeat with an MV and an MZ
 game. Confirm the log names the storage bridge before engine startup. If startup

@@ -310,6 +310,56 @@
         wrapped.__emuObserved = true;
         object[name] = wrapped;
     }
+    const heldKeys = new Map();
+    function keyNumber(key, code) {
+        if (/^Key[A-Z]$/.test(code)) return code.charCodeAt(3);
+        if (/^Digit[0-9]$/.test(code)) return code.charCodeAt(5);
+        if (/^F([1-9]|1[0-2])$/.test(code)) return 111 + Number(code.slice(1));
+        const codes = {Enter: 13, Escape: 27, Space: 32, Tab: 9, Backspace: 8,
+            ShiftLeft: 16, ShiftRight: 16, ControlLeft: 17, ControlRight: 17,
+            AltLeft: 18, AltRight: 18, ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39,
+            ArrowDown: 40, PageUp: 33, PageDown: 34, Home: 36, End: 35, Delete: 46,
+            Quote: 222, Backslash: 220, Semicolon: 186, Comma: 188, Period: 190,
+            Slash: 191, Backquote: 192, BracketLeft: 219, BracketRight: 221, Minus: 189, Equal: 187};
+        return codes[code] || codes[key] || ({Shift: 16, Control: 17, Alt: 18, ' ': 32})[key] ||
+            (key.length === 1 ? key.toUpperCase().charCodeAt(0) : 0);
+    }
+    function dispatchKey(entry, down) {
+        const modifier = prefix => [...heldKeys.keys()].some(code => code.startsWith(prefix));
+        const event = new KeyboardEvent(down ? 'keydown' : 'keyup', {
+            key: entry.key, code: entry.code, keyCode: entry.number, which: entry.number,
+            bubbles: true, cancelable: true, shiftKey: modifier('Shift'),
+            ctrlKey: modifier('Control'), altKey: modifier('Alt'), metaKey: modifier('Meta')
+        });
+        Object.defineProperty(event, 'keyCode', {get: () => entry.number});
+        Object.defineProperty(event, 'which', {get: () => entry.number});
+        // One bubbling event reaches element, document and window listeners once.
+        (document.activeElement || document).dispatchEvent(event);
+    }
+    window.__emuKeyEvent = (key, code, down) => {
+        let entry = heldKeys.get(code);
+        if (down) {
+            if (entry) { entry.release = false; return; }
+            entry = {key, code, number: keyNumber(key, code), sampled: false, release: false};
+            heldKeys.set(code, entry);
+            for (const context of new Set([window.WebAudio?._context, window.AudioManager?._context])) {
+                if (context?.state === 'suspended') context.resume().catch(error => log('warning', describe(error)));
+            }
+            dispatchKey(entry, true);
+        } else if (entry) {
+            // MV/MZ sample held state once per frame. A tap ending before that
+            // sample otherwise disappears entirely, especially on slow maps.
+            if (window.Input?.update && !entry.sampled) entry.release = true;
+            else { heldKeys.delete(code); dispatchKey(entry, false); }
+        }
+    };
+    window.__emuReleaseKeys = () => {
+        const entries = [...heldKeys.values()];
+        heldKeys.clear();
+        for (const entry of entries) dispatchKey(entry, false);
+    };
+    window.addEventListener('blur', window.__emuReleaseKeys);
+    window.addEventListener('pagehide', window.__emuReleaseKeys);
     // MV's browser index assumes shared localStorage. Our files are already
     // isolated by game directory, like desktop MV. Repair only the in-memory
     // index view; never rewrite imported saves merely by opening the title.
@@ -345,6 +395,14 @@
     }
     function install() {
         installStorage();
+        wrap(window.Input, 'update', original => function (...args) {
+            const result = original.apply(this, args);
+            for (const [code, entry] of heldKeys) {
+                entry.sampled = true;
+                if (entry.release) { heldKeys.delete(code); dispatchKey(entry, false); }
+            }
+            return result;
+        });
         wrap(window.DataManager, 'loadGlobalInfo', original => function (...args) {
             const info = original.apply(this, args);
             return repairMVIndex(info, this);

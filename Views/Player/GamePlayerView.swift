@@ -10,6 +10,8 @@ struct GamePlayerView: View {
     @ObservedObject private var server = LocalGameServer.shared
     @State private var errorMessage: String? = nil
     @State private var didCleanup = false
+    @Environment(\.scenePhase) private var scenePhase
+    @AppStorage("keepScreenAwake") private var keepScreenAwake = true
     
     var body: some View {
         ZStack {
@@ -69,6 +71,8 @@ struct GamePlayerView: View {
         .onReceive(server.$lastError) { message in
             if let message = message { errorMessage = message }
         }
+        .onChange(of: keepScreenAwake) { _ in updateIdleTimer() }
+        .onChange(of: scenePhase) { _ in updateIdleTimer() }
         .statusBarHidden(true)
     }
     
@@ -76,7 +80,7 @@ struct GamePlayerView: View {
         didCleanup = false
         errorMessage = nil
         // 保持屏幕常亮
-        UIApplication.shared.isIdleTimerDisabled = true
+        updateIdleTimer()
         
         guard let rootURL = GameLibraryManager.shared.getGameRootURL(for: game) else {
             let msg = "未找到游戏根目录或 index.html"
@@ -94,6 +98,10 @@ struct GamePlayerView: View {
         }
     }
     
+    private func updateIdleTimer() {
+        UIApplication.shared.isIdleTimerDisabled = !didCleanup && keepScreenAwake && scenePhase == .active
+    }
+
     private func exitGame() {
         cleanup()
         onDismiss()

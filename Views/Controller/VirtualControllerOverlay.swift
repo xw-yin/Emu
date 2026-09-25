@@ -7,6 +7,8 @@ struct VirtualControllerOverlay: View {
     weak var webView: WKWebView?
     let onExitGame: () -> Void
     
+    @Environment(\.scenePhase) private var scenePhase
+    @AppStorage("keepScreenAwake") private var keepScreenAwake = true
     @State private var profile: GameKeyProfile = .actionRPG
     @State private var controllerOpacity: Double = 0.85
     @State private var showKeymapSheet: Bool = false
@@ -115,6 +117,10 @@ struct VirtualControllerOverlay: View {
         .onAppear {
             self.profile = KeyMappingManager.shared.loadProfile(for: gameTitle)
         }
+        .onDisappear { releaseKeys() }
+        .onChange(of: scenePhase) { phase in if phase != .active { releaseKeys() } }
+        .onChange(of: isControllerHidden) { _ in releaseKeys() }
+        .onChange(of: isLayoutEditMode) { _ in releaseKeys() }
         .sheet(isPresented: $showKeymapSheet) {
             KeyMappingEditorSheet(
                 gameTitle: gameTitle,
@@ -173,69 +179,41 @@ struct VirtualControllerOverlay: View {
     
     // MARK: - 发送键盘事件到 WebKit
     private func sendKeyEvent(key: String, code: String, isDown: Bool) {
-        if isDown {
-            let unlockJs = """
-            if (window.WebAudio && window.WebAudio._context && window.WebAudio._context.state === 'suspended') {
-                window.WebAudio._context.resume();
+        guard let webView = webView else { return }
+        webView.callAsyncJavaScript(
+            "if (!window.__emuKeyEvent) throw new Error('输入桥尚未就绪'); window.__emuKeyEvent(key, code, isDown); return true;",
+            arguments: ["key": key, "code": code, "isDown": isDown],
+            in: nil, contentWorld: .page
+        ) { result in
+            if case .failure(let error) = result {
+                GameLogManager.shared.log("虚拟按键发送失败: \(code): \(error.localizedDescription)", level: .error)
             }
-            if (window.AudioManager && window.AudioManager._context && window.AudioManager._context.state === 'suspended') {
-                window.AudioManager._context.resume();
-            }
-            """
-            webView?.evaluateJavaScript(unlockJs, completionHandler: nil)
         }
-        
-        let type = isDown ? "keydown" : "keyup"
-        let js = """
-        (function() {
-            function getKeyCode(k, c) {
-                if (c && c.indexOf('Key') === 0 && c.length === 4) {
-                    return c.charCodeAt(3);
-                }
-                if (c && c.indexOf('Digit') === 0 && c.length === 6) {
-                    return c.charCodeAt(5);
-                }
-                if (c && c.indexOf('F') === 0 && c.length <= 3) {
-                    var n = parseInt(c.slice(1));
-                    if (n >= 1 && n <= 12) return 111 + n;
-                }
-                var map = {
-                    'Enter': 13, 'Escape': 27, 'Space': 32, ' ': 32,
-                    'Tab': 9, 'Shift': 16, 'ShiftLeft': 16, 'ShiftRight': 16,
-                    'Control': 17, 'ControlLeft': 17, 'ControlRight': 17,
-                    'Alt': 18, 'AltLeft': 18, 'AltRight': 18,
-                    'Backspace': 8, 'Delete': 46,
-                    'ArrowLeft': 37, 'ArrowUp': 38, 'ArrowRight': 39, 'ArrowDown': 40,
-                    'PageUp': 33, 'PageDown': 34, 'Home': 36, 'End': 35
-                };
-                if (map[c]) return map[c];
-                if (map[k]) return map[k];
-                if (k && k.length === 1) return k.toUpperCase().charCodeAt(0);
-                return 0;
-            }
-            var kc = getKeyCode('\(key)', '\(code)');
-            var evt = new KeyboardEvent('\(type)', {
-                key: '\(key)',
-                code: '\(code)',
-                keyCode: kc,
-                which: kc,
-                bubbles: true,
-                cancelable: true
-            });
-            try {
-                Object.defineProperty(evt, 'keyCode', { get: function() { return kc; } });
-                Object.defineProperty(evt, 'which', { get: function() { return kc; } });
-            } catch(e) {}
-            window.dispatchEvent(evt);
-            document.dispatchEvent(evt);
-        })();
-        """
-        webView?.evaluateJavaScript(js, completionHandler: nil)
+    }
+
+    private func releaseKeys() {
+        webView?.evaluateJavaScript("window.__emuReleaseKeys?.()", completionHandler: nil)
     }
     // MARK: - 顶部工具栏胶囊内容
     @ViewBuilder
     private var toolbarButtons: some View {
         HStack(spacing: 8) {
+            Button {
+                releaseKeys()
+                GameLogManager.shared.openConsole()
+            } label: {
+                Label("日志", systemImage: "terminal")
+                    .font(.system(size: 12, weight: .bold))
+                    .padding(8)
+            }
+            .accessibilityLabel("查看和复制游戏日志")
+
+            Button { keepScreenAwake.toggle() } label: {
+                Label(keepScreenAwake ? "常亮开" : "常亮关", systemImage: keepScreenAwake ? "sun.max.fill" : "sun.max")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(keepScreenAwake ? Color.yellow : Color.white)
+                    .padding(8)
+            }
             // 虚拟按键显隐切换
             Button(action: {
                 HapticManager.shared.buttonPress()
@@ -259,6 +237,7 @@ struct VirtualControllerOverlay: View {
             // 自定义按键与映射配置入口
             Button(action: {
                 HapticManager.shared.buttonPress()
+                releaseKeys()
                 showKeymapSheet = true
             }) {
                 HStack(spacing: 5) {

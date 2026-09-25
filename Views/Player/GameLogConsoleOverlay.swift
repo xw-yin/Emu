@@ -1,19 +1,19 @@
 import SwiftUI
+import UIKit
 
 /// 游戏加载与运行实时日志终端浮层（可在加载黑屏期充当极客进度条，直观排查任何白屏/黑屏/脚本错误）
 struct GameLogConsoleOverlay: View {
     @ObservedObject var logManager = GameLogManager.shared
-    @State private var isCollapsed: Bool = false
     
     var body: some View {
         ZStack(alignment: .topLeading) {
             if logManager.isVisible {
-                if isCollapsed {
+                if logManager.isCollapsed {
                     // 折叠态：左上角超小型灵动胶囊徽标
                     Button(action: {
                         HapticManager.shared.buttonPress()
                         withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-                            isCollapsed = false
+                            logManager.isCollapsed = false
                         }
                     }) {
                         HStack(spacing: 5) {
@@ -88,7 +88,7 @@ struct GameLogConsoleOverlay: View {
                                 Button(action: {
                                     HapticManager.shared.buttonPress()
                                     withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-                                        isCollapsed = true
+                                        logManager.isCollapsed = true
                                     }
                                 }) {
                                     Image(systemName: "chevron.up.circle.fill")
@@ -116,11 +116,21 @@ struct GameLogConsoleOverlay: View {
                         Divider()
                             .background(Color.white.opacity(0.12))
                         
+                        HStack {
+                            Button("复制全部") { UIPasteboard.general.string = logManager.exportedText }
+                            Spacer()
+                            Toggle("跟随最新", isOn: $logManager.followsLatest)
+                                .fixedSize()
+                        }
+                        .font(.system(size: 12))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+
                         // 日志列表滚动区
                         ScrollViewReader { scrollProxy in
                             ScrollView(.vertical, showsIndicators: true) {
                                 LazyVStack(alignment: .leading, spacing: 4) {
-                                    ForEach(logManager.logs) { item in
+                                    ForEach(logManager.retainedLogs) { item in
                                         HStack(alignment: .top, spacing: 6) {
                                             Text(logManager.formatTime(item.timestamp))
                                                 .font(.system(size: 10, design: .monospaced))
@@ -138,6 +148,9 @@ struct GameLogConsoleOverlay: View {
                                                 .fixedSize(horizontal: false, vertical: true)
                                                 .textSelection(.enabled)
                                         }
+                                        .contextMenu {
+                                            Button("复制此条") { UIPasteboard.general.string = item.message }
+                                        }
                                         .id(item.id)
                                     }
                                 }
@@ -145,7 +158,7 @@ struct GameLogConsoleOverlay: View {
                                 .padding(.vertical, 8)
                             }
                             .onChange(of: logManager.logs.last?.id) { _ in
-                                if let last = logManager.logs.last {
+                                if logManager.followsLatest, let last = logManager.logs.last {
                                     withAnimation(.easeOut(duration: 0.1)) {
                                         scrollProxy.scrollTo(last.id, anchor: .bottom)
                                     }
