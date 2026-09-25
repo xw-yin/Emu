@@ -11,6 +11,7 @@ final class LocalGameServer: ObservableObject {
     
     private var listener: NWListener?
     private var rootDirectoryURL: URL?
+    private var persistentSaveDirectory: URL?
     private var sessionID = UUID()
     private var connections: [ObjectIdentifier: NWConnection] = [:]
     // 使用高速串行队列（遵循 Apple Network.framework 对单连接串行化的严格要求，杜绝死锁与丢包）
@@ -27,13 +28,34 @@ final class LocalGameServer: ObservableObject {
     private init() {}
     
     /// 启动本地服务器并指定根目录
-    func start(serving directoryURL: URL) throws {
+    func start(serving directoryURL: URL, saveDirectory: URL? = nil) throws {
         stop()
         lastError = nil
-        queue.sync { self.rootDirectoryURL = directoryURL }
+        try queue.sync {
+            self.rootDirectoryURL = directoryURL
+            if let destination = saveDirectory {
+                let fm = FileManager.default
+                try fm.createDirectory(at: destination, withIntermediateDirectories: true)
+                let marker = destination.appendingPathComponent(".imported")
+                if !fm.fileExists(atPath: marker.path) {
+                    let existing = try self.readSaves()
+                    for (name, text) in existing {
+                        let target = destination.appendingPathComponent(name)
+                        if !fm.fileExists(atPath: target.path) {
+                            try Data(text.utf8).write(to: target, options: .atomic)
+                        }
+                    }
+                    try Data("1".utf8).write(to: marker, options: .atomic)
+                }
+                self.persistentSaveDirectory = destination
+            }
+        }
         
         GameLogManager.shared.reset()
         GameLogManager.shared.log("正在准备本地环境与资源索引...")
+        if saveDirectory != nil {
+            GameLogManager.shared.log("外部游戏存档已使用 App 内独立目录，原游戏文件保持不变")
+        }
         
         cacheLock.lock()
         resolvedPathCache.removeAll()
@@ -111,6 +133,7 @@ final class LocalGameServer: ObservableObject {
         queue.sync {
             sessionID = UUID()
             rootDirectoryURL = nil
+            persistentSaveDirectory = nil
             for connection in connections.values { connection.cancel() }
             connections.removeAll()
         }
@@ -377,21 +400,37 @@ final class LocalGameServer: ObservableObject {
         return resolvedPath == base || resolvedPath.hasPrefix(base + "/")
     }
 
+    // File providers can materialize/download a document during coordinated access.
+    // Always read the coordinator's URL, which may differ from the requested URL.
+    private func coordinatedRead(_ url: URL) throws -> Data {
+        var coordinationError: NSError?
+        var result: Result<Data, Error>?
+        NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &coordinationError) { readableURL in
+            result = Result { try Data(contentsOf: readableURL) }
+        }
+        if let error = coordinationError { throw error }
+        guard let result = result else { throw CocoaError(.fileReadUnknown) }
+        return try result.get()
+    }
+
     private func readSaves() throws -> [String: String] {
         guard let root = rootDirectoryURL else { throw CocoaError(.fileNoSuchFile) }
-        let directory = resolveCaseInsensitiveFile(root: root, relativePath: "save") ?? root.appendingPathComponent("save")
-        guard contained(directory, in: root) else { throw CocoaError(.fileReadNoPermission) }
+        let directory = persistentSaveDirectory ?? resolveCaseInsensitiveFile(root: root, relativePath: "save") ?? root.appendingPathComponent("save")
+        let saveRoot = persistentSaveDirectory ?? root
+        guard contained(directory, in: saveRoot) else { throw CocoaError(.fileReadNoPermission) }
         guard FileManager.default.fileExists(atPath: directory.path) else { return [:] }
         var saves: [String: String] = [:]
         for file in try FileManager.default.contentsOfDirectory(atPath: directory.path) where isSaveName(file) {
             let url = directory.appendingPathComponent(file)
-            guard contained(url, in: root) else { throw CocoaError(.fileReadNoPermission) }
+            guard contained(url, in: saveRoot) else { throw CocoaError(.fileReadNoPermission) }
             // Do not turn unreadable saves into a successful empty snapshot.
             let key = file.lowercased()
             guard saves[key] == nil else {
                 throw NSError(domain: "Emu.Save", code: 1, userInfo: [NSLocalizedDescriptionKey: "存档文件名大小写冲突: \(file)"])
             }
-            saves[key] = try String(contentsOf: url, encoding: .utf8)
+            let data = try coordinatedRead(url)
+            guard let text = String(data: data, encoding: .utf8) else { throw CocoaError(.fileReadInapplicableStringEncoding) }
+            saves[key] = text
         }
         return saves
     }
@@ -410,9 +449,9 @@ final class LocalGameServer: ObservableObject {
         guard let root = rootDirectoryURL else { return nil }
         let parts = path.split(separator: "/", omittingEmptySubsequences: false)
         guard parts.count == 3, parts[0].isEmpty, parts[1] == "save", isSaveName(String(parts[2])) else { return nil }
-        let directory = resolveCaseInsensitiveFile(root: root, relativePath: "save") ?? root.appendingPathComponent("save")
-        let url = resolveCaseInsensitiveFile(root: root, relativePath: String(path.dropFirst())) ?? directory.appendingPathComponent(String(parts[2]))
-        return contained(url, in: root) ? url : nil
+        let directory = persistentSaveDirectory ?? resolveCaseInsensitiveFile(root: root, relativePath: "save") ?? root.appendingPathComponent("save")
+        let url = resolveCaseInsensitiveFile(root: directory, relativePath: String(parts[2])) ?? directory.appendingPathComponent(String(parts[2]))
+        return contained(url, in: persistentSaveDirectory ?? root) ? url : nil
     }
 
     private func handleSaveWrite(path: String, body: Data, connection: NWConnection) {
@@ -446,12 +485,21 @@ final class LocalGameServer: ObservableObject {
 
     // MARK: - 文件检索与分段响应 (HTTP 206 Partial Content)
     private func serveFile(at relativePath: String, method: String, requestHeaders: [String: String], connection: NWConnection) {
-        guard let rootURL = rootDirectoryURL else {
+        guard var rootURL = rootDirectoryURL else {
             sendResponse(connection: connection, statusCode: 500, headers: [:], body: Data("Server Not Configured".utf8))
             return
         }
         
-        let sanitizedPath = relativePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        var sanitizedPath = relativePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if let directory = persistentSaveDirectory, sanitizedPath.hasPrefix("save/") {
+            let name = String(sanitizedPath.dropFirst(5))
+            guard isSaveName(name), !name.contains("/") else {
+                sendResponse(connection: connection, statusCode: 403, headers: [:], body: Data())
+                return
+            }
+            rootURL = directory
+            sanitizedPath = name
+        }
         var targetFileURL = rootURL.appendingPathComponent(sanitizedPath)
         
         // 1. 安全沙盒检查
@@ -496,8 +544,12 @@ final class LocalGameServer: ObservableObject {
             return
         }
 
-        guard var fileData = try? Data(contentsOf: targetFileURL) else {
-            GameLogManager.shared.log("文件读取失败 (500): \(sanitizedPath)", level: .error)
+        var fileData: Data
+        do {
+            fileData = try coordinatedRead(targetFileURL)
+        } catch {
+            let detail = error as NSError
+            GameLogManager.shared.log("文件读取失败 (500): \(sanitizedPath): \(detail.domain)(\(detail.code)) \(detail.localizedDescription)", level: .error)
             sendResponse(connection: connection, statusCode: 500, headers: ["Access-Control-Allow-Origin": "*"], body: Data("Read Error".utf8))
             return
         }
@@ -585,6 +637,7 @@ final class LocalGameServer: ObservableObject {
     /// 带缓存的大小写不敏感递归查找文件（解决 Windows 到 iOS APFS 的路径大小写不一致并加速二次查找）
     private func resolveCaseInsensitiveFile(root: URL, relativePath: String) -> URL? {
         let fm = FileManager.default
+        let cacheKey = root.standardizedFileURL.path + "/" + relativePath
         
         // 极速快路径：直接尝试原生路径 (匹配直接存在的情况)
         let directURL = root.appendingPathComponent(relativePath)
@@ -594,7 +647,7 @@ final class LocalGameServer: ObservableObject {
         
         // 内存缓存查找
         cacheLock.lock()
-        if let cached = resolvedPathCache[relativePath] {
+        if let cached = resolvedPathCache[cacheKey], fm.fileExists(atPath: cached.path) {
             cacheLock.unlock()
             return cached
         }
@@ -616,7 +669,7 @@ final class LocalGameServer: ObservableObject {
         let result = fm.fileExists(atPath: currentURL.path) ? currentURL : nil
         if let found = result {
             cacheLock.lock()
-            resolvedPathCache[relativePath] = found
+            resolvedPathCache[cacheKey] = found
             cacheLock.unlock()
         }
         return result

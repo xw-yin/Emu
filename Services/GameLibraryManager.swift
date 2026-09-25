@@ -64,7 +64,10 @@ final class GameLibraryManager: ObservableObject {
         let title = extractGameTitle(from: gameRoot) ?? url.lastPathComponent
         let coverPath = findCoverImage(at: gameRoot)
         
+        var currentExternal = loadSavedExternalGames()
+        let existingID = currentExternal.first { $0.rootDirectoryName == url.lastPathComponent }?.id
         let externalGame = Game(
+            id: existingID ?? UUID(),
             title: title,
             rootDirectoryName: url.lastPathComponent,
             engineType: engine,
@@ -73,7 +76,6 @@ final class GameLibraryManager: ObservableObject {
             securityBookmarkData: bookmark
         )
         
-        var currentExternal = loadSavedExternalGames()
         // 去重
         currentExternal.removeAll { $0.rootDirectoryName == externalGame.rootDirectoryName }
         currentExternal.append(externalGame)
@@ -91,8 +93,17 @@ final class GameLibraryManager: ObservableObject {
             var isStale = false
             if let resolvedURL = try? URL(resolvingBookmarkData: bookmarkData, options: [], relativeTo: nil, bookmarkDataIsStale: &isStale) {
                 // 激活外部访问权限
-                if resolvedURL.startAccessingSecurityScopedResource() {
-                    activeSecurityScopedURL = resolvedURL
+                guard resolvedURL.startAccessingSecurityScopedResource() else {
+                    GameLogManager.shared.log("游戏目录授权失效，请在游戏库重新关联原文件夹", level: .error)
+                    return nil
+                }
+                activeSecurityScopedURL = resolvedURL
+                if isStale, let refreshed = try? resolvedURL.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil) {
+                    var saved = loadSavedExternalGames()
+                    if let index = saved.firstIndex(where: { $0.id == game.id }) {
+                        saved[index].securityBookmarkData = refreshed
+                        saveExternalGames(saved)
+                    }
                 }
                 root = findGameRoot(within: resolvedURL)
             } else {
@@ -103,7 +114,7 @@ final class GameLibraryManager: ObservableObject {
             root = findGameRoot(within: folder)
         }
         
-        if let rootURL = root {
+        if let rootURL = root, !game.isExternalStorage {
             // 确保 save 目录预先存在，方便存放与读写存档
             let saveDir = rootURL.appendingPathComponent("save", isDirectory: true)
             if !FileManager.default.fileExists(atPath: saveDir.path) {

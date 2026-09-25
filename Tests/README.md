@@ -25,6 +25,12 @@ The existing macOS build workflow runs both offline JavaScript checks and native
 server checks before building the app. No game files are required; native checks
 create and remove their own temporary directory.
 
+External games now import their original saves once into Application Support /
+GameSaves / game UUID. Native checks cover import, independent writes/HTTP reads,
+restart persistence and deletion without reimport. Original external saves remain
+untouched. File-provider resources are read through NSFileCoordinator; actual iOS
+provider permissions and cloud materialization still require device verification.
+
 ## Changes under test
 
 - Native save snapshot is installed before each main-document navigation. The

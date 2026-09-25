@@ -90,7 +90,12 @@ struct GamePlayerView: View {
         }
         
         do {
-            try LocalGameServer.shared.start(serving: rootURL)
+            let saveDirectory: URL? = game.isExternalStorage
+                ? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                    .appendingPathComponent("GameSaves", isDirectory: true)
+                    .appendingPathComponent(game.id.uuidString, isDirectory: true)
+                : nil
+            try LocalGameServer.shared.start(serving: rootURL, saveDirectory: saveDirectory)
         } catch {
             let msg = "本地服务启动失败: \(error.localizedDescription)"
             errorMessage = msg
