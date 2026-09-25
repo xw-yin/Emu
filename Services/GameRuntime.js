@@ -394,6 +394,32 @@
     };
     window.addEventListener('blur', window.__emuReleaseKeys);
     window.addEventListener('pagehide', window.__emuReleaseKeys);
+    let hostPaused = false;
+    let resumeScene = false;
+    let pausedAudio = [];
+    let pausedMedia = [];
+    window.__emuSetPaused = paused => {
+        if (hostPaused === paused) return;
+        hostPaused = paused;
+        const manager = window.SceneManager;
+        if (paused) {
+            window.__emuReleaseKeys();
+            resumeScene = !!manager && !manager._stopped;
+            if (resumeScene) manager.stop?.();
+            pausedAudio = [...new Set([window.WebAudio?._context, window.AudioManager?._context])]
+                .filter(context => context?.state === 'running');
+            for (const context of pausedAudio) context.suspend().catch(error => log('warning', describe(error)));
+            pausedMedia = [...(document.querySelectorAll?.('audio, video') || [])].filter(media => !media.paused);
+            for (const media of pausedMedia) media.pause();
+        } else {
+            if (resumeScene) manager?.resume?.();
+            resumeScene = false;
+            for (const context of pausedAudio) context.resume().catch(error => log('warning', describe(error)));
+            pausedAudio = [];
+            for (const media of pausedMedia) media.play()?.catch(error => log('warning', describe(error)));
+            pausedMedia = [];
+        }
+    };
     // MV's browser index assumes shared localStorage. Our files are already
     // isolated by game directory, like desktop MV. Repair only the in-memory
     // index view; never rewrite imported saves merely by opening the title.
@@ -495,6 +521,7 @@
             return original.apply(this, args);
         });
         wrap(window.SceneManager, 'catchException', original => function (error) {
+            resumeScene = false;
             log('error', '引擎停止: ' + describe(error));
             return original.call(this, error);
         });

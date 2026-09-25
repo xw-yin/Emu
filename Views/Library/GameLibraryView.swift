@@ -5,6 +5,10 @@ import UniformTypeIdentifiers
 struct GameLibraryView: View {
     @StateObject private var libraryManager = GameLibraryManager.shared
     @State private var selectedGame: Game? = nil
+    @State private var gameVisible = false
+    @State private var pendingGame: Game? = nil
+    @State private var confirmSwitch = false
+    @State private var closeRequest = 0
     @State private var isImporting: Bool = false
     @State private var importErrorMessage: String? = nil
     @State private var showImportError: Bool = false
@@ -48,7 +52,14 @@ struct GameLibraryView: View {
                             LazyVGrid(columns: columns, spacing: 18) {
                                 ForEach(libraryManager.games) { game in
                                     GameCardView(game: game) {
-                                        selectedGame = game
+                                        if let active = selectedGame,
+                                           active.rootDirectoryName != game.rootDirectoryName || active.isExternalStorage != game.isExternalStorage {
+                                            pendingGame = game
+                                            confirmSwitch = true
+                                        } else {
+                                            if selectedGame == nil { selectedGame = game }
+                                            gameVisible = true
+                                        }
                                     }
                                     .contextMenu {
                                         Button(role: .destructive) {
@@ -140,12 +151,34 @@ struct GameLibraryView: View {
         ) { result in
             handleImport(result: result)
         }
-        .fullScreenCover(item: $selectedGame) { (game: Game) in
-            GamePlayerView(game: game) {
-                selectedGame = nil
-                libraryManager.loadGames()
+        .overlay {
+            if let game = selectedGame {
+                GamePlayerView(game: game, isPresented: gameVisible, closeRequest: closeRequest, onDismiss: {
+                    gameVisible = false
+                }, onClose: {
+                    gameVisible = false
+                    selectedGame = nil
+                    libraryManager.loadGames()
+                    if let next = pendingGame {
+                        pendingGame = nil
+                        DispatchQueue.main.async {
+                            selectedGame = next
+                            gameVisible = true
+                        }
+                    }
+                })
+                .id(game.id)
+                .opacity(gameVisible ? 1 : 0)
+                .allowsHitTesting(gameVisible)
+                .accessibilityHidden(!gameVisible)
             }
         }
+        .alert("关闭当前游戏并打开另一款？", isPresented: $confirmSwitch) {
+            Button("取消", role: .cancel) { pendingGame = nil }
+            Button("关闭并打开", role: .destructive) {
+                closeRequest += 1
+            }
+        } message: { Text("当前游戏未保存的进度会丢失。") }
         .alert("导入提示", isPresented: $showImportError) {
             Button("确定", role: .cancel) {}
         } message: {

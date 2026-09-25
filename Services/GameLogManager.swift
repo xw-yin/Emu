@@ -49,7 +49,7 @@ final class GameLogManager: ObservableObject {
     @Published var isCollapsed = false
     @Published var followsLatest = true
     @Published var manuallyOpened = false
-    @Published var errorsOnly = false
+    @Published var selectedLevel: LogItem.Level? = nil
     @Published private var startupLogs: [LogItem] = []
     private let maxLogCount = 2000
 
@@ -63,7 +63,7 @@ final class GameLogManager: ObservableObject {
     }
 
     var visibleLogs: [LogItem] {
-        errorsOnly ? retainedLogs.filter { $0.level == .error } : retainedLogs
+        selectedLevel.map { level in retainedLogs.filter { $0.level == level } } ?? retainedLogs
     }
 
     var filteredText: String {
@@ -90,7 +90,7 @@ final class GameLogManager: ObservableObject {
         logs.removeAll()
         startupLogs.removeAll()
         manuallyOpened = false
-        errorsOnly = false
+        selectedLevel = nil
         followsLatest = true
         isCollapsed = false
         loadedCount = 0

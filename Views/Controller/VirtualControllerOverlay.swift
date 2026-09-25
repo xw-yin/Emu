@@ -6,6 +6,8 @@ struct VirtualControllerOverlay: View {
     let gameTitle: String
     weak var webView: WKWebView?
     let onExitGame: () -> Void
+    let onCloseGame: () -> Void
+    @State private var confirmClose = false
     
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("keepScreenAwake") private var keepScreenAwake = true
@@ -32,6 +34,16 @@ struct VirtualControllerOverlay: View {
                                 .clipShape(Circle())
                         }
                         
+                        Button { releaseKeys(); confirmClose = true } label: {
+                            Image(systemName: "power")
+                                .font(.system(size: 15, weight: .bold))
+                                .foregroundStyle(.white)
+                                .frame(width: 38, height: 38)
+                                .background(.ultraThinMaterial)
+                                .clipShape(Circle())
+                        }
+                        .accessibilityLabel("关闭游戏")
+
                         Spacer(minLength: 8)
                         
                         // 灵动胶囊工具栏：宽度充足时完整并列，宽度受限/横屏一行展示不下时支持丝滑横向滑动
@@ -113,6 +125,12 @@ struct VirtualControllerOverlay: View {
                 .opacity(isControllerHidden ? 0 : controllerOpacity)
                 .allowsHitTesting(!isControllerHidden)
             }
+        }
+        .alert("关闭游戏？", isPresented: $confirmClose) {
+            Button("取消", role: .cancel) {}
+            Button("关闭游戏", role: .destructive, action: onCloseGame)
+        } message: {
+            Text("关闭后将结束当前游戏，未保存的进度会丢失。返回游戏库则可以稍后继续。")
         }
         .onAppear {
             self.profile = KeyMappingManager.shared.loadProfile(for: gameTitle)

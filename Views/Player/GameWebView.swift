@@ -23,6 +23,7 @@ final class GameViewportWebView: WKWebView {
 struct GameWebView: UIViewRepresentable {
     let url: URL
     @Binding var webView: WKWebView?
+    var isGameVisible = true
     
     func makeUIView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
@@ -169,7 +170,9 @@ struct GameWebView: UIViewRepresentable {
         return webView
     }
     
-    func updateUIView(_ uiView: WKWebView, context: Context) {}
+    func updateUIView(_ uiView: WKWebView, context: Context) {
+        context.coordinator.parent = self
+    }
     
     static func dismantleUIView(_ uiView: WKWebView, coordinator: Coordinator) {
         coordinator.isActive = false
@@ -297,6 +300,8 @@ struct GameWebView: UIViewRepresentable {
         
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             GameLogManager.shared.log("网页加载完成，等待游戏场景就绪...", level: .success)
+            let paused = !parent.isGameVisible || UIApplication.shared.applicationState != .active
+            webView.evaluateJavaScript("window.__emuSetPaused?.(\(paused ? "true" : "false"))", completionHandler: nil)
         }
         
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {

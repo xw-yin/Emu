@@ -62,6 +62,24 @@ function mz(env) {
     env.ctx.__emuInstallRuntime();
     return env.ctx.StorageManager;
 }
+test('returning to library pauses and resumes the same scene without reviving a stopped engine', () => {
+    const env = environment();
+    const scene = {progress: 42};
+    let stops = 0, resumes = 0;
+    env.ctx.SceneManager = {_scene: scene, _stopped: false,
+        stop() { this._stopped = true; stops++; },
+        resume() { this._stopped = false; resumes++; }};
+    env.ctx.__emuSetPaused(true);
+    env.ctx.__emuSetPaused(true);
+    assert.equal(stops, 1);
+    env.ctx.__emuSetPaused(false);
+    assert.equal(resumes, 1);
+    assert.equal(env.ctx.SceneManager._scene, scene);
+    env.ctx.SceneManager._stopped = true;
+    env.ctx.__emuSetPaused(true);
+    env.ctx.__emuSetPaused(false);
+    assert.equal(resumes, 1);
+});
 
 test('Drill title globals read directory snapshot and persist through MV journal', async () => {
     const env = environment({saves: {'drill_global.rpgsave': '{"TTG":{"global_visibleTank":[false,true]}}'}});

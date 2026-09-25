@@ -4,7 +4,12 @@ import WebKit
 /// 游戏全屏主界面：整合本地流媒体服务器、WebKit 画布与次世代悬浮控制器
 struct GamePlayerView: View {
     let game: Game
+    let isPresented: Bool
+    let closeRequest: Int
     let onDismiss: () -> Void
+    let onClose: () -> Void
+    @State private var hasLaunched = false
+    @State private var isClosing = false
     
     @State private var webView: WKWebView? = nil
     @ObservedObject private var server = LocalGameServer.shared
@@ -19,13 +24,12 @@ struct GamePlayerView: View {
             
             if server.isRunning, let url = URL(string: "http://127.0.0.1:\(server.port)/index.html") {
                 // 底层：游戏画面
-                GameWebView(url: url, webView: $webView)
+                GameWebView(url: url, webView: $webView, isGameVisible: isPresented)
                     .ignoresSafeArea()
                 
                 // 次层：流体玻璃虚拟控制器浮层
-                VirtualControllerOverlay(gameTitle: game.title, webView: webView) {
-                    exitGame()
-                }
+                VirtualControllerOverlay(gameTitle: game.title, webView: webView,
+                    onExitGame: onDismiss, onCloseGame: exitGame)
             } else if let error = errorMessage {
                 VStack(spacing: 16) {
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -63,7 +67,7 @@ struct GamePlayerView: View {
             GameLogConsoleOverlay()
         }
         .onAppear {
-            launchGame()
+            if !hasLaunched { hasLaunched = true; launchGame() }
         }
         .onDisappear {
             cleanup()
@@ -73,7 +77,17 @@ struct GamePlayerView: View {
         }
         .onChange(of: keepScreenAwake) { _ in updateIdleTimer() }
         .onChange(of: scenePhase) { _ in updateIdleTimer() }
-        .statusBarHidden(true)
+        .onChange(of: closeRequest) { _ in exitGame() }
+        .onChange(of: isPresented) { _ in updatePresentation() }
+        .onChange(of: webView) { _ in updatePresentation() }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+            DispatchQueue.main.async { updatePresentation() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
+            UIApplication.shared.isIdleTimerDisabled = false
+            webView?.evaluateJavaScript("window.__emuSetPaused?.(true)", completionHandler: nil)
+        }
+        .statusBarHidden(isPresented)
     }
     
     private func launchGame() {
@@ -104,12 +118,24 @@ struct GamePlayerView: View {
     }
     
     private func updateIdleTimer() {
-        UIApplication.shared.isIdleTimerDisabled = !didCleanup && keepScreenAwake && scenePhase == .active
+        UIApplication.shared.isIdleTimerDisabled = !didCleanup && isPresented && keepScreenAwake && UIApplication.shared.applicationState == .active
+    }
+
+    private func updatePresentation() {
+        updateIdleTimer()
+        let paused = !isPresented || UIApplication.shared.applicationState != .active
+        webView?.evaluateJavaScript("window.__emuSetPaused?.(\(paused ? "true" : "false"))", completionHandler: nil)
     }
 
     private func exitGame() {
-        cleanup()
-        onDismiss()
+        guard !isClosing else { return }
+        isClosing = true
+        guard let webView = webView else { cleanup(); onClose(); return }
+        webView.callAsyncJavaScript("window.__emuSetPaused?.(true); window.__emuReleaseKeys?.(); if(window.__emuFlushSaves) await window.__emuFlushSaves(); return true;",
+            arguments: [:], in: nil, in: .page) { _ in
+                cleanup()
+                onClose()
+            }
     }
     
     private func cleanup() {

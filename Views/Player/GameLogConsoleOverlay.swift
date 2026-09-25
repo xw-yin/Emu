@@ -55,35 +55,9 @@ struct GameLogConsoleOverlay: View {
                             Spacer()
                             
                             HStack(spacing: 8) {
-                                Button {
-                                    logManager.errorsOnly = false
-                                    logManager.followsLatest = false
-                                } label: {
-                                    Text("全部 \(logManager.retainedLogs.count)")
-                                        .font(.system(size: 11, weight: .bold, design: .monospaced))
-                                        .foregroundStyle(.white)
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 3)
-                                        .background(Color.white.opacity(logManager.errorsOnly ? 0.08 : 0.28))
-                                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityValue(logManager.errorsOnly ? "未选中" : "已选中")
-
-                                Button {
-                                    logManager.errorsOnly = true
-                                    logManager.followsLatest = false
-                                } label: {
-                                    Text("错误 \(logManager.errorCount)")
-                                        .font(.system(size: 11, weight: .bold, design: .monospaced))
-                                        .foregroundStyle(.white)
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 3)
-                                        .background(Color.white.opacity(logManager.errorsOnly ? 0.28 : 0.08))
-                                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityValue(logManager.errorsOnly ? "已选中" : "未选中")
+                                filterButton("全部", level: nil)
+                                filterButton("WARN", level: .warning)
+                                filterButton("错误", level: .error)
 
                                 Button {
                                     UIPasteboard.general.string = logManager.filteredText
@@ -95,7 +69,7 @@ struct GameLogConsoleOverlay: View {
                                         .frame(width: 16, height: 16)
                                         .background(Color.white.opacity(0.8), in: Circle())
                                 }
-                                .accessibilityLabel(logManager.errorsOnly ? "复制错误日志" : "复制全部日志")
+                                .accessibilityLabel("复制当前筛选日志")
 
                                 Button {
                                     logManager.followsLatest.toggle()
@@ -144,7 +118,7 @@ struct GameLogConsoleOverlay: View {
                             ScrollView(.vertical, showsIndicators: true) {
                                 LazyVStack(alignment: .leading, spacing: 4) {
                                     if logManager.visibleLogs.isEmpty {
-                                        Text(logManager.errorsOnly ? "暂无保留的错误日志" : "暂无日志")
+                                        Text(logManager.selectedLevel == nil ? "暂无日志" : "当前分类暂无日志")
                                             .foregroundStyle(.secondary)
                                     }
                                     ForEach(logManager.visibleLogs) { item in
@@ -205,4 +179,21 @@ struct GameLogConsoleOverlay: View {
         }
         .allowsHitTesting(true)
     }
+    private func filterButton(_ title: String, level: GameLogManager.LogItem.Level?) -> some View {
+        Button {
+            logManager.selectedLevel = level
+            logManager.followsLatest = false
+        } label: {
+            Text(title)
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 4)
+                .background(Color.white.opacity(logManager.selectedLevel == level ? 0.28 : 0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue(logManager.selectedLevel == level ? "已选中" : "未选中")
+    }
+
 }
