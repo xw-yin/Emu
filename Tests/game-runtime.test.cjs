@@ -232,6 +232,70 @@ test('watchdog reports missing database/scene without forcing startup', () => {
     assert.equal(env.logs.some(item => item.level === 'ready'), false);
 });
 
+const completeMVSave = () => JSON.stringify(Object.fromEntries(
+    ['system', 'screen', 'timer', 'switches', 'variables', 'selfSwitches', 'actors', 'party', 'map', 'player']
+        .map(key => [key, {'@': 'Game_' + key, marker: 'original progress'}])));
+
+function titleEnvironment(saves) {
+    const env = environment({saves});
+    env.ctx.$dataSystem = {gameTitle: 'Current title'};
+    env.ctx.DataManager = {
+        _globalId: 'RPGMV', maxSavefiles: () => 20,
+        loadGlobalInfo() { return this._globalInfo ||= JSON.parse(env.ctx.StorageManager.load(0) || '[]'); },
+        isThisGameFile(id) {
+            const info = this.loadGlobalInfo()[id];
+            return !!info && info.globalId === this._globalId && info.title === env.ctx.$dataSystem.gameTitle;
+        },
+        isAnySavefileExists() { return this.loadGlobalInfo().some((info, id) => id > 0 && this.isThisGameFile(id)); }
+    };
+    mv(env);
+    return env;
+}
+test('MV missing global index enables Continue only for complete game saves, without disk writes', () => {
+    const save = completeMVSave();
+    const env = titleEnvironment({'file1.rpgsave': save, 'file2.rpgsave': '{"system":{}}', 'file3.rpgsave': 'broken'});
+    assert.equal(env.ctx.DataManager.isAnySavefileExists(), true);
+    assert.equal(env.ctx.DataManager.isThisGameFile(1), true);
+    assert.equal(env.ctx.DataManager.isThisGameFile(2), false);
+    assert.equal(env.ctx.DataManager.isThisGameFile(3), false);
+    assert.equal(env.ctx.StorageManager.load(1), save);
+    assert.equal(env.ctx.StorageManager.load(0), null);
+    assert.equal(env.requests.length, 0);
+    assert.equal(env.journal.size, 0);
+    assert.match(env.logs.find(log => log.message.includes('file3')).message, /解压失败/);
+});
+test('MV directory-scoped old title index is repaired as a view and refreshed after deletion', () => {
+    const global = '[null,{"title":"Old title","globalId":"old","playtime":"12:34","custom":42}]';
+    const env = titleEnvironment({'file1.rpgsave': completeMVSave(), 'global.rpgsave': global});
+    assert.equal(env.ctx.DataManager.isAnySavefileExists(), true);
+    const info = env.ctx.DataManager.loadGlobalInfo()[1];
+    assert.equal(info.playtime, '12:34');
+    assert.equal(info.custom, 42);
+    assert.equal(env.ctx.DataManager._globalInfo[1].title, 'Old title');
+    assert.equal(env.ctx.StorageManager.load(0), global);
+    env.ctx.StorageManager.remove(1);
+    assert.equal(env.ctx.DataManager.isAnySavefileExists(), false);
+});
+test('Continue rejection and synchronous/asynchronous load failures produce errors without changing results', async () => {
+    const env = titleEnvironment({});
+    let buzzed = 0;
+    env.ctx.Window_TitleCommand = function () {};
+    env.ctx.Window_TitleCommand.prototype = {
+        currentSymbol: () => 'continue', isCurrentItemEnabled: () => false,
+        processOk() { buzzed++; }
+    };
+    env.ctx.DataManager.loadGame = () => false;
+    env.ctx.__emuInstallRuntime();
+    new env.ctx.Window_TitleCommand().processOk();
+    assert.equal(buzzed, 1);
+    assert.ok(env.logs.some(log => log.level === 'error' && log.message.includes('继续游戏不可用')));
+    assert.equal(env.ctx.DataManager.loadGame(1), false);
+    assert.ok(env.logs.some(log => log.level === 'error' && log.message.includes('读取存档失败: 1')));
+    env.ctx.DataManager.loadGame = async () => { throw new Error('plugin extract failed'); };
+    env.ctx.__emuInstallRuntime();
+    await assert.rejects(env.ctx.DataManager.loadGame(2), /plugin extract failed/);
+});
+
 // Optional integration against an unmodified MV corescript checkout. The small
 // contract tests above remain fully offline and run on every build.
 test('official MV managers read PC saves/config and preserve save availability',
@@ -264,4 +328,32 @@ test('official MV managers read PC saves/config and preserve save availability',
         assert.equal(next.ctx.DataManager.isAnySavefileExists(), true);
         assert.equal(next.ctx.DataManager.isThisGameFile(1), true);
         assert.equal(JSON.parse(next.ctx.StorageManager.load(1)).system.name, '存档一');
+    });
+
+test('official MV reproduces disabled Continue and loads repaired orphan/renamed-title saves',
+    {skip: !process.env.EMU_MV_SOURCE_DIR}, () => {
+        for (const global of [null, '[null,{"title":"Old title","globalId":"RPGMV"}]']) {
+            const env = environment({saves: {'file1.rpgsave': completeMVSave(),
+                ...(global ? {'global.rpgsave': global} : {})}});
+            for (const name of ['lz-string', 'StorageManager', 'DataManager']) {
+                vm.runInContext(fs.readFileSync(path.join(process.env.EMU_MV_SOURCE_DIR, name + '.js'), 'utf8'), env.ctx);
+            }
+            env.ctx.Utils = {isNwjs: () => false};
+            env.ctx.$dataSystem = {gameTitle: 'Current title'};
+            // Reproduce the existing failure using the untouched MV index logic.
+            env.ctx.StorageManager.load = id => id === 0 ? global : completeMVSave();
+            env.ctx.StorageManager.exists = id => id === 1;
+            assert.equal(env.ctx.DataManager.isAnySavefileExists(), false);
+            env.ctx.__emuInstallRuntime();
+            assert.equal(env.ctx.DataManager.isAnySavefileExists(), true);
+            // This test exercises MV's real load/extract flow; object construction
+            // and JsonEx class revival belong to device/game-specific checks.
+            env.ctx.DataManager.createGameObjects = () => {};
+            env.ctx.JsonEx = {parse: JSON.parse};
+            assert.equal(env.ctx.DataManager.loadGame(1), true);
+            assert.equal(env.ctx.$gameSystem.marker, 'original progress');
+            assert.equal(env.ctx.$gamePlayer.marker, 'original progress');
+            assert.equal(env.ctx.Utils.isNwjs(), false);
+            assert.equal(env.requests.length, 0);
+        }
     });

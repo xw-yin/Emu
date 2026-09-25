@@ -310,8 +310,65 @@
         wrapped.__emuObserved = true;
         object[name] = wrapped;
     }
+    // MV's browser index assumes shared localStorage. Our files are already
+    // isolated by game directory, like desktop MV. Repair only the in-memory
+    // index view; never rewrite imported saves merely by opening the title.
+    const inspectedSlots = new Map();
+    function repairMVIndex(info, dm) {
+        if (window.StorageManager?.__emuStorage !== 'MV' || !window.$dataSystem) return info;
+        const result = Array.isArray(info) ? info.slice() : [];
+        for (let id = 1; id <= dm.maxSavefiles(); id++) {
+            const name = mvName(id);
+            if (!has(name)) continue;
+            const previous = result[id];
+            if (previous?.globalId === dm._globalId && previous?.title === window.$dataSystem.gameTitle) continue;
+            let inspected = inspectedSlots.get(name);
+            if (!inspected || inspected.raw !== cache[name]) {
+                inspected = {raw: cache[name], valid: false};
+                try {
+                    const data = JSON.parse(readRaw(name));
+                    // Do not enable Continue for arbitrary JSON/config/plugin files.
+                    inspected.valid = ['system', 'screen', 'timer', 'switches', 'variables',
+                        'selfSwitches', 'actors', 'party', 'map', 'player'].every(key =>
+                        data?.[key] && typeof data[key] === 'object' && !Array.isArray(data[key]));
+                    if (!inspected.valid) throw new Error('缺少 MV 游戏存档必要字段');
+                    log('warning', '已恢复存档索引（仅内存）: ' + name +
+                        (previous ? '，按当前游戏目录识别旧标题/标识' : '，原索引缺失'));
+                } catch (error) { log('error', '无法恢复存档索引: ' + name + ': ' + describe(error)); }
+                inspectedSlots.set(name, inspected);
+            }
+            if (inspected.valid) result[id] = Object.assign({characters: [], faces: [], playtime: '', timestamp: 0}, previous, {
+                globalId: dm._globalId, title: window.$dataSystem.gameTitle
+            });
+        }
+        return result;
+    }
     function install() {
         installStorage();
+        wrap(window.DataManager, 'loadGlobalInfo', original => function (...args) {
+            const info = original.apply(this, args);
+            return repairMVIndex(info, this);
+        });
+        wrap(window.DataManager, 'loadGame', original => function (id, ...args) {
+            log('info', '开始读取存档: ' + id);
+            const failure = error => log('error', '读取存档失败: ' + id + ': ' +
+                (error ? describe(error) : '引擎返回失败，请检查存档索引、插件及上方异常日志'));
+            try {
+                const result = original.call(this, id, ...args);
+                if (result && typeof result.then === 'function') return result.then(value => {
+                    if (value === false) failure();
+                    return value;
+                }, error => { failure(error); throw error; });
+                if (result === false) failure();
+                return result;
+            } catch (error) { failure(error); throw error; }
+        });
+        wrap(window.Window_TitleCommand?.prototype, 'processOk', original => function (...args) {
+            if (this.currentSymbol?.() === 'continue' && this.isCurrentItemEnabled?.() === false) {
+                log('error', '继续游戏不可用: ' + JSON.stringify(saveDiag()));
+            }
+            return original.apply(this, args);
+        });
         // Observe the engine; preserve plugin implementations and readiness checks.
         wrap(window.SceneManager, 'run', original => function (...args) {
             installStorage();

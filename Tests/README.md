@@ -39,6 +39,11 @@ create and remove their own temporary directory.
 - MV's older browser-only saves are imported when their game title and global ID
   match; existing disk files win. MZ retains its original game-scoped IndexedDB
   fallback and key initialization. Original browser data is not bulk-deleted.
+- MV directory-scoped saves with a missing index or outdated title/global ID get
+  an in-memory index view after validating all ten standard save-content fields.
+  Opening Continue does not rewrite the imported files. Invalid/orphan fragments
+  are not promoted to save slots; plugin index fields and normal eligibility
+  checks are preserved. Disabled Continue and load failures emit explicit errors.
 - Missing resources, invalid saves, and plugin errors are reported rather than
   replaced with empty scripts/maps or bypassed readiness checks.
 - No compatibility code globally replaces map geometry or swallows save extraction
