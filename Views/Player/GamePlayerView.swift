@@ -163,18 +163,22 @@ private struct GamePerformancePanel: View {
     @AppStorage("showPerformanceMonitor") private var visible = false
     @State private var summary = "正在采样…"
     @State private var minimized = false
+    @State private var fps = "—"
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("性能监控").fontWeight(.bold)
-                Spacer()
-                Button { minimized.toggle() } label: {
-                    Image(systemName: minimized ? "chevron.down.circle.fill" : "chevron.up.circle.fill")
+            if minimized {
+                Button { minimized = false } label: { Text("\(fps) FPS").fontWeight(.bold) }
+                    .accessibilityLabel("展开性能监控，\(fps) FPS")
+            } else {
+                HStack {
+                    Text("性能监控").fontWeight(.bold)
+                    Spacer()
+                    Button { minimized = true } label: {
+                        Image(systemName: "chevron.up.circle.fill")
+                    }
+                    Button { visible = false } label: { Image(systemName: "xmark.circle.fill") }
                 }
-                Button { visible = false } label: { Image(systemName: "xmark.circle.fill") }
-            }
-            if !minimized {
                 Text(summary).textSelection(.enabled)
                 Text("像素占用为估算，不含纹理副本。\nWebKit 进程总内存：系统未开放。")
                     .font(.system(size: 10))
@@ -184,7 +188,7 @@ private struct GamePerformancePanel: View {
         .font(.system(size: 11, design: .monospaced))
         .foregroundStyle(.white)
         .padding(10)
-        .frame(width: 240)
+        .frame(width: minimized ? 80 : 240)
         .background(Color.black.opacity(0.85), in: RoundedRectangle(cornerRadius: 12))
         .task {
             while !Task.isCancelled {
@@ -195,11 +199,13 @@ private struct GamePerformancePanel: View {
                             guard let value = data[key], !(value is NSNull) else { return "不支持" }
                             return String(describing: value)
                         }
+                        fps = value("fps")
                         summary = "循环 FPS: \(value("fps"))  帧间隔: \(value("frameMs"))ms\nP95: \(value("p95Ms"))ms  >50ms: \(value("slowFrames"))\n场景: \(value("scene"))\n渲染: \(value("renderer"))\n已统计图片: \(value("imageCount"))  标题帧: \(value("titleFrameCount"))\n像素估算: \(value("pixelMiB")) MiB\nJS 堆: \(value("heapMiB")) MiB\n待写存档: \(value("pendingWrites"))"
                     }
                     try await Task.sleep(nanoseconds: 1_000_000_000)
                 } catch {
                     if Task.isCancelled { break }
+                    fps = "—"
                     summary = "采样暂不可用：\(error.localizedDescription)"
                     try? await Task.sleep(nanoseconds: 1_000_000_000)
                 }

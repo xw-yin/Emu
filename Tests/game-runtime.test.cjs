@@ -62,6 +62,52 @@ function mz(env) {
     env.ctx.__emuInstallRuntime();
     return env.ctx.StorageManager;
 }
+
+test('known malformed sleep expression is repaired without mutating event data or masking other errors', () => {
+    const env = environment();
+    env.ctx.Game_Interpreter = function () {};
+    env.ctx.Game_Interpreter.prototype.command122 = function () { return eval(this._params[4]); };
+    env.ctx.__emuInstallRuntime();
+    const interpreter = new env.ctx.Game_Interpreter();
+    const params = [80, 80, 0, 4, '""睡觉""'];
+    interpreter._params = params;
+    assert.equal(interpreter.command122(), '睡觉');
+    assert.equal(interpreter._params, params);
+    assert.equal(params[4], '""睡觉""');
+    interpreter._params = [81, 81, 0, 4, '""睡觉""'];
+    assert.throws(() => interpreter.command122(), SyntaxError);
+    interpreter._params = [80, 80, 0, 4, '40 + 2'];
+    assert.equal(interpreter.command122(), 42);
+    env.ctx.Game_Interpreter.prototype.command122 = function () { throw new Error('real failure'); };
+    env.ctx.__emuInstallRuntime();
+    interpreter._params = params;
+    assert.throws(() => interpreter.command122(), /real failure/);
+    assert.equal(interpreter._params, params);
+});
+
+test('media observer classifies cancellations and preserves rejected play promises for callers', async () => {
+    const env = environment();
+    env.ctx.HTMLMediaElement = function () {};
+    let result;
+    env.ctx.HTMLMediaElement.prototype.play = () => result;
+    env.ctx.__emuInstallRuntime();
+    const media = new env.ctx.HTMLMediaElement();
+    for (const scenario of [
+        {name: 'AbortError', src: '', paused: false, level: 'warning'},
+        {name: 'AbortError', src: 'title.webm', paused: true, level: 'warning'},
+        {name: 'AbortError', src: 'title.webm', paused: false, level: 'error'},
+        {name: 'NotSupportedError', src: 'title.webm', paused: false, level: 'error'}
+    ]) {
+        Object.assign(media, scenario);
+        const error = Object.assign(new Error('play failed'), {name: scenario.name});
+        result = Promise.reject(error);
+        assert.equal(media.play(), result);
+        await assert.rejects(result, value => value === error);
+        await tick();
+        assert.equal(env.logs.at(-1).level, scenario.level);
+        assert.match(env.logs.at(-1).message, /媒体播放调用位置/);
+    }
+});
 test('performance sampling is opt-in, bounded, and labels pixel estimates separately from heap', () => {
     const env = environment();
     let now = 100;

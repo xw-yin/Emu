@@ -321,21 +321,27 @@ struct VirtualControllerOverlay: View {
                 .clipShape(Capsule())
             }
             
-            Menu {
-                Picker("屏幕方向", selection: $gameOrientation) {
-                    Text("自动旋转").tag("auto")
-                    Text("锁定竖屏").tag("portrait")
-                    Text("锁定横屏").tag("landscape")
-                }
+            Button {
+                if gameOrientation == "auto" {
+                    let orientation = webView?.window?.windowScene?.interfaceOrientation
+                    switch orientation {
+                    case .landscapeLeft: gameOrientation = "landscapeLeft"
+                    case .landscapeRight: gameOrientation = "landscapeRight"
+                    case .portraitUpsideDown: gameOrientation = "portraitUpsideDown"
+                    default: gameOrientation = "portrait"
+                    }
+                } else { gameOrientation = "auto" }
             } label: {
-                Image(systemName: gameOrientation == "auto" ? "rotate.right" : "lock.rotation")
+                Image(systemName: "lock.rotation")
                     .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.85))
+                    .foregroundStyle(.white)
                     .frame(width: 36, height: 36)
+                    .background(gameOrientation == "auto" ? Color.clear : Color.cyan.opacity(0.55))
                     .background(.ultraThinMaterial)
                     .clipShape(Circle())
             }
-            .accessibilityLabel("屏幕方向锁定")
+            .accessibilityLabel(gameOrientation == "auto" ? "锁定当前方向" : "解除方向锁定")
+            .accessibilityValue(gameOrientation == "auto" ? "未锁定" : "已锁定")
 
             Button { showPerformanceMonitor.toggle() } label: {
                 Image(systemName: "speedometer")

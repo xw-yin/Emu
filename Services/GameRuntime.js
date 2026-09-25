@@ -531,11 +531,32 @@
             return original.apply(this, args);
         });
         wrap(window.HTMLMediaElement?.prototype, 'play', original => function (...args) {
+            const media = this;
+            const source = this.currentSrc || this.src || '';
+            const caller = new Error('媒体播放调用位置').stack;
             const result = original.apply(this, args);
             if (result && typeof result.then === 'function') {
-                asyncSources.set(result, '媒体播放: ' + (this.currentSrc || this.src || '未设置地址'));
+                asyncSources.set(result, '媒体播放: ' + (source || '未设置地址'));
+                // Observe the original promise without converting rejection into
+                // success for callers that explicitly await/catch play().
+                result.then(undefined, error => {
+                    const cancelled = error?.name === 'AbortError' &&
+                        (media.paused || !source || (media.currentSrc || media.src || '') !== source);
+                    log(cancelled ? 'warning' : 'error',
+                        (cancelled ? '媒体播放已取消（暂停/换源/空地址）: ' : '媒体播放失败: ') +
+                        (source || '未设置地址') + '\n' + describe(error) + '\n' + caller);
+                });
             }
             return result;
+        });
+        wrap(window.Game_Interpreter?.prototype, 'command122', original => function (...args) {
+            const params = this._params;
+            if (params?.[0] !== 80 || params[1] !== 80 || params[2] !== 0 ||
+                params[3] !== 4 || params[4] !== '""睡觉""') return original.apply(this, args);
+            this._params = params.slice();
+            this._params[4] = '"睡觉"';
+            try { return original.apply(this, args); }
+            finally { this._params = params; }
         });
         // MV + PIXI 4 Canvas keeps a pattern from the previous tiling bitmap.
         // Animated title frames change bitmaps but MV only resets tilingTexture.

@@ -20,7 +20,14 @@ final class OrientationDelegate: NSObject, UIApplicationDelegate {
     }
 
     static func apply(_ mode: String) {
-        mask = mode == "portrait" ? .portrait : mode == "landscape" ? .landscape : .allButUpsideDown
+        switch mode {
+        case "portrait": mask = .portrait
+        case "portraitUpsideDown": mask = .portraitUpsideDown
+        case "landscapeLeft": mask = .landscapeLeft
+        case "landscapeRight": mask = .landscapeRight
+        case "landscape": mask = .landscape
+        default: mask = .allButUpsideDown
+        }
         guard UIApplication.shared.applicationState == .active else { return }
         for case let scene as UIWindowScene in UIApplication.shared.connectedScenes where scene.activationState == .foregroundActive {
             for window in scene.windows {
