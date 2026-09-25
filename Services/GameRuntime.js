@@ -297,6 +297,19 @@
     window.addEventListener('load', () => setTimeout(() => {
         if (!window.SceneManager && !window.Utils?.RPGMAKER_NAME && !failed) {
             ready = true;
+            try {
+                const scripts = Array.from(document.scripts || []).map(s =>
+                    s.src ? s.src.split('/').slice(-2).join('/') : '(inline)');
+                log('warning', '页面诊断: ' + JSON.stringify({
+                    scripts: scripts.slice(0, 20),
+                    scriptCount: scripts.length,
+                    sceneManager: !!window.SceneManager,
+                    rpgMaker: window.Utils?.RPGMAKER_NAME || null,
+                    dataSystem: !!window.$dataSystem,
+                    canvasCount: document.querySelectorAll('canvas').length,
+                    page: location.pathname.split('/').pop()
+                }));
+            } catch (_) { /* diagnostic only, never block pageReady */ }
             log('pageReady', 'HTML5 页面已加载');
         }
     }, 1000));
