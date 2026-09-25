@@ -91,6 +91,36 @@ struct GameLogConsoleOverlay: View {
                                     .accessibilityLabel(logManager.errorsOnly ? "显示全部日志" : "只显示错误日志")
                                 }
                                 
+                                Button {
+                                    UIPasteboard.general.string = logManager.exportedText
+                                    HapticManager.shared.buttonPress()
+                                } label: {
+                                    Image(systemName: "doc.on.doc")
+                                        .font(.system(size: 16))
+                                        .foregroundStyle(.white.opacity(0.8))
+                                        .frame(width: 24, height: 24)
+                                }
+                                .accessibilityLabel("复制全部日志")
+                                .contextMenu {
+                                    Button("复制错误日志") {
+                                        UIPasteboard.general.string = logManager.retainedLogs
+                                            .filter { $0.level == .error }
+                                            .map { "[\(logManager.formatTime($0.timestamp))] [ERR] \($0.message)" }
+                                            .joined(separator: "\n")
+                                    }
+                                }
+
+                                Button {
+                                    logManager.followsLatest.toggle()
+                                } label: {
+                                    Image(systemName: logManager.followsLatest ? "arrow.down.to.line.circle.fill" : "arrow.down.to.line.circle")
+                                        .font(.system(size: 16))
+                                        .foregroundStyle(logManager.followsLatest ? Color.cyan : Color.white.opacity(0.8))
+                                        .frame(width: 24, height: 24)
+                                }
+                                .accessibilityLabel("跟随最新日志")
+                                .accessibilityValue(logManager.followsLatest ? "已开启" : "已关闭")
+
                                 // 最小化按钮
                                 Button(action: {
                                     HapticManager.shared.buttonPress()
@@ -123,19 +153,6 @@ struct GameLogConsoleOverlay: View {
                         Divider()
                             .background(Color.white.opacity(0.12))
                         
-                        HStack {
-                            Button("复制全部") { UIPasteboard.general.string = logManager.exportedText }
-                            if logManager.errorsOnly {
-                                Button("复制错误") { UIPasteboard.general.string = logManager.filteredText }
-                            }
-                            Spacer()
-                            Toggle("跟随最新", isOn: $logManager.followsLatest)
-                                .fixedSize()
-                        }
-                        .font(.system(size: 12))
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-
                         // 日志列表滚动区
                         ScrollViewReader { scrollProxy in
                             ScrollView(.vertical, showsIndicators: true) {
