@@ -62,6 +62,26 @@ function mz(env) {
     env.ctx.__emuInstallRuntime();
     return env.ctx.StorageManager;
 }
+test('performance sampling is opt-in, bounded, and labels pixel estimates separately from heap', () => {
+    const env = environment();
+    let now = 100;
+    env.ctx.performance = {now: () => now};
+    env.ctx.SceneManager = {updateMain() {}};
+    env.ctx.ImageManager = {_imageCache: {_items: {a: {bitmap: {width: 1024, height: 1024}}}}};
+    env.ctx.__emuInstallRuntime();
+    env.ctx.SceneManager.updateMain();
+    assert.equal(env.ctx.__emuPerformance().fps, 0);
+    for (let i = 0; i < 61; i++) { now += 1000 / 60; env.ctx.SceneManager.updateMain(); }
+    const result = env.ctx.__emuPerformance();
+    assert.equal(result.fps, 60);
+    assert.equal(result.pixelMiB, 4);
+    assert.equal(result.heapMiB, null);
+    assert.equal(result.pendingWrites, 0);
+    env.ctx.__emuStopPerformance();
+    now += 1000;
+    env.ctx.SceneManager.updateMain();
+    assert.equal(env.ctx.__emuPerformance().fps, 0);
+});
 test('title frame loader prefetches only a neighbour and does not preload the full animation', () => {
     const env = environment();
     const urls = [];

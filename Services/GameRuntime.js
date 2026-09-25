@@ -353,6 +353,43 @@
     }
     const heldKeys = new Map();
     const titleFrames = new WeakMap();
+    let performanceEnabled = false;
+    let previousFrameTime = 0;
+    let frameIntervals = [];
+    window.__emuStopPerformance = () => {
+        performanceEnabled = false;
+        previousFrameTime = 0;
+        frameIntervals = [];
+    };
+    window.__emuPerformance = () => {
+        performanceEnabled = true;
+        const samples = frameIntervals;
+        frameIntervals = [];
+        const mean = samples.length ? samples.reduce((a, b) => a + b, 0) / samples.length : 0;
+        const sorted = samples.slice().sort((a, b) => a - b);
+        const bitmaps = new Set();
+        for (const item of Object.values(window.ImageManager?._imageCache?._items || {})) {
+            if (item?.bitmap) bitmaps.add(item.bitmap);
+        }
+        let titleFrameCount = 0;
+        for (const data of window.SceneManager?._scene?._drill_TTG_dataTank || []) {
+            for (const bitmap of titleFrames.get(data)?.values() || []) { bitmaps.add(bitmap); titleFrameCount++; }
+        }
+        let pixels = 0;
+        for (const bitmap of bitmaps) pixels += (bitmap.width || 0) * (bitmap.height || 0) * 4;
+        return {
+            fps: mean ? Math.round(1000 / mean) : 0,
+            frameMs: Math.round(mean * 10) / 10,
+            p95Ms: Math.round((sorted[Math.max(0, Math.ceil(sorted.length * 0.95) - 1)] || 0) * 10) / 10,
+            slowFrames: samples.filter(ms => ms > 50).length,
+            scene: window.SceneManager?._scene?.constructor?.name || '未创建',
+            renderer: window.Graphics?.isWebGL?.() ? 'WebGL' : 'Canvas/未知',
+            imageCount: bitmaps.size, titleFrameCount,
+            pixelMiB: Math.round(pixels / 1048576),
+            heapMiB: window.performance?.memory ? Math.round(window.performance.memory.usedJSHeapSize / 1048576) : null,
+            pendingWrites: queues.size, paused: hostPaused
+        };
+    };
     window.__emuTitleFrame = (data, index) => {
         let frames = titleFrames.get(data);
         if (!frames) { frames = new Map(); titleFrames.set(data, frames); }
@@ -485,6 +522,14 @@
     function install() {
         installStorage();
         installViewport();
+        wrap(window.SceneManager, 'updateMain', original => function (...args) {
+            if (performanceEnabled && !hostPaused) {
+                const now = window.performance.now();
+                if (previousFrameTime && frameIntervals.length < 240) frameIntervals.push(now - previousFrameTime);
+                previousFrameTime = now;
+            }
+            return original.apply(this, args);
+        });
         wrap(window.HTMLMediaElement?.prototype, 'play', original => function (...args) {
             const result = original.apply(this, args);
             if (result && typeof result.then === 'function') {

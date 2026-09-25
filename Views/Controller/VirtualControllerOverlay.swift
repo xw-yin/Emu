@@ -11,6 +11,7 @@ struct VirtualControllerOverlay: View {
     @State private var toolbarCollapsed = false
     @State private var dpadDragStart: CGPoint?
     @State private var actionDragStart: [UUID: CGPoint] = [:]
+    @AppStorage("showPerformanceMonitor") private var showPerformanceMonitor = false
     @AppStorage("gameOrientation") private var gameOrientation = "auto"
     
     @Environment(\.scenePhase) private var scenePhase
@@ -335,6 +336,16 @@ struct VirtualControllerOverlay: View {
                     .clipShape(Circle())
             }
             .accessibilityLabel("屏幕方向锁定")
+
+            Button { showPerformanceMonitor.toggle() } label: {
+                Image(systemName: "speedometer")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(showPerformanceMonitor ? Color.cyan : Color.white.opacity(0.85))
+                    .frame(width: 36, height: 36)
+                    .background(.ultraThinMaterial)
+                    .clipShape(Circle())
+            }
+            .accessibilityLabel("性能监控")
 
             // 透明度调节
             Menu {

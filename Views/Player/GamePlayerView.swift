@@ -10,6 +10,7 @@ struct GamePlayerView: View {
     let onClose: () -> Void
     @State private var hasLaunched = false
     @State private var isClosing = false
+    @AppStorage("showPerformanceMonitor") private var showPerformanceMonitor = false
     
     @State private var webView: WKWebView? = nil
     @ObservedObject private var server = LocalGameServer.shared
@@ -65,6 +66,12 @@ struct GamePlayerView: View {
             }
             
             // 顶层：加载与运行实时日志终端浮层（充当实时极客进度条，可在进入场景后自动折叠）
+            if showPerformanceMonitor && isPresented, let webView = webView {
+                GamePerformancePanel(webView: webView)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    .padding(.top, 66)
+                    .padding(.trailing, 16)
+            }
             GameLogConsoleOverlay()
         }
         .onAppear {
@@ -148,5 +155,58 @@ struct GamePlayerView: View {
         LocalGameServer.shared.stop()
         GameLibraryManager.shared.releaseGameAccess()
         UIApplication.shared.isIdleTimerDisabled = false
+    }
+}
+
+private struct GamePerformancePanel: View {
+    let webView: WKWebView
+    @AppStorage("showPerformanceMonitor") private var visible = false
+    @State private var summary = "正在采样…"
+    @State private var minimized = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("性能监控").fontWeight(.bold)
+                Spacer()
+                Button { minimized.toggle() } label: {
+                    Image(systemName: minimized ? "chevron.down.circle.fill" : "chevron.up.circle.fill")
+                }
+                Button { visible = false } label: { Image(systemName: "xmark.circle.fill") }
+            }
+            if !minimized {
+                Text(summary).textSelection(.enabled)
+                Text("像素占用为估算，不含纹理副本。\nWebKit 进程总内存：系统未开放。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.white.opacity(0.7))
+            }
+        }
+        .font(.system(size: 11, design: .monospaced))
+        .foregroundStyle(.white)
+        .padding(10)
+        .frame(width: 240)
+        .background(Color.black.opacity(0.85), in: RoundedRectangle(cornerRadius: 12))
+        .task {
+            while !Task.isCancelled {
+                do {
+                    let result = try await webView.evaluateJavaScript("window.__emuPerformance?.()")
+                    if let data = result as? [String: Any] {
+                        func value(_ key: String) -> String {
+                            guard let value = data[key], !(value is NSNull) else { return "不支持" }
+                            return String(describing: value)
+                        }
+                        summary = "循环 FPS: \(value("fps"))  帧间隔: \(value("frameMs"))ms\nP95: \(value("p95Ms"))ms  >50ms: \(value("slowFrames"))\n场景: \(value("scene"))\n渲染: \(value("renderer"))\n已统计图片: \(value("imageCount"))  标题帧: \(value("titleFrameCount"))\n像素估算: \(value("pixelMiB")) MiB\nJS 堆: \(value("heapMiB")) MiB\n待写存档: \(value("pendingWrites"))"
+                    }
+                    try await Task.sleep(nanoseconds: 1_000_000_000)
+                } catch {
+                    if Task.isCancelled { break }
+                    summary = "采样暂不可用：\(error.localizedDescription)"
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                }
+            }
+        }
+        .onDisappear {
+            webView.evaluateJavaScript("window.__emuStopPerformance?.()", completionHandler: nil)
+        }
     }
 }

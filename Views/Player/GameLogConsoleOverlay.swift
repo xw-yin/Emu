@@ -188,7 +188,7 @@ struct GameLogConsoleOverlay: View {
             logManager.selectedLevel = level
             logManager.followsLatest = false
         } label: {
-            Text("\(title) \(logManager.retainedLogs.filter { level == nil || $0.level == level }.count)")
+            Text("\(title) \(logManager.count(for: level))")
                 .font(.system(size: 11, weight: .bold))
                 .foregroundStyle(.white)
                 .padding(.horizontal, 6)

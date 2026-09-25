@@ -406,7 +406,7 @@ final class LocalGameServer: ObservableObject {
         var coordinationError: NSError?
         var result: Result<Data, Error>?
         NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &coordinationError) { readableURL in
-            result = Result { try Data(contentsOf: readableURL) }
+            result = Result { try Data(contentsOf: readableURL, options: .mappedIfSafe) }
         }
         if let error = coordinationError { throw error }
         guard let result = result else { throw CocoaError(.fileReadUnknown) }

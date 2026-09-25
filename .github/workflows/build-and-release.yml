@@ -63,6 +63,11 @@ jobs:
           swiftc -parse-as-library Services/LocalGameServer.swift Services/EmuScriptAssets.swift Tests/LocalGameServerChecks.swift -o "$RUNNER_TEMP/emu-server-checks"
           "$RUNNER_TEMP/emu-server-checks"
 
+      - name: Check log batching and filters
+        run: |
+          swiftc -parse-as-library Services/GameLogManager.swift Tests/GameLogChecks.swift -o "$RUNNER_TEMP/emu-log-checks"
+          "$RUNNER_TEMP/emu-log-checks"
+
       - name: Determine Version & Build Number
         id: versioning
         run: |
