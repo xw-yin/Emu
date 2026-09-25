@@ -573,6 +573,15 @@ final class LocalGameServer: ObservableObject {
             }
         }
 
+        if targetFileURL.lastPathComponent.lowercased() == "mpp_choiceex.js",
+           let source = String(data: fileData, encoding: .utf8) {
+            // MPP appends a synthetic cancel result after the visible commands.
+            // That result has no Window_Command row and cannot be queried for enabled.
+            let broken = "this.isCancelEnabled() && index !== type && !this.isCommandEnabled(index)"
+            let fixed = "this.isCancelEnabled() && index >= 0 && index < this.maxItems() && index !== type && !this.isCommandEnabled(index)"
+            fileData = Data(source.replacingOccurrences(of: broken, with: fixed).utf8)
+        }
+
         let totalCount = fileData.count
         let mime = mimeType(for: targetFileURL.pathExtension)
         

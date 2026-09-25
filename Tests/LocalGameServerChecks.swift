@@ -72,6 +72,10 @@ struct LocalGameServerChecks {
         try require(String(decoding: glow, as: UTF8.self).contains("|| 1) - 1;"), "Convert one-based default color")
         let untouchedGlow = try String(contentsOf: root.appendingPathComponent("js/Drill_DialogCharOuterGlow.js"), encoding: .utf8)
         try require(untouchedGlow == glowSource, "Compatibility response does not edit original plugin")
+        let choiceSource = "if (this.isCancelEnabled() && index !== type && !this.isCommandEnabled(index)) { this.playBuzzerSound(); }"
+        try Data(choiceSource.utf8).write(to: root.appendingPathComponent("js/MPP_ChoiceEX.js"))
+        let (choice, _) = try await request("/js/MPP_ChoiceEX.js")
+        try require(String(decoding: choice, as: UTF8.self).contains("index >= 0 && index < this.maxItems()"), "Guard synthetic cancel choice indices")
         let (_, missing) = try await request("/js/missing.js")
         try require(missing.statusCode == 404, "Missing JS must not be replaced with success stubs")
         let (tail, partial) = try await request("/audio.ogg", range: "bytes=-3")

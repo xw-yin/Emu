@@ -55,60 +55,47 @@ struct GameLogConsoleOverlay: View {
                             Spacer()
                             
                             HStack(spacing: 8) {
-                                // 统计标签
-                                HStack(spacing: 4) {
-                                    Text("已加载")
-                                        .font(.system(size: 10))
-                                        .foregroundStyle(.secondary)
-                                    Text("\(logManager.loadedCount)")
-                                        .font(.system(size: 11, weight: .bold, design: .monospaced))
-                                        .foregroundStyle(Color.green)
-                                }
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 3)
-                                .background(Color.white.opacity(0.08))
-                                .clipShape(RoundedRectangle(cornerRadius: 6))
-                                
-                                if logManager.errorCount > 0 {
-                                    Button {
-                                        logManager.errorsOnly.toggle()
-                                        logManager.followsLatest = false
-                                    } label: {
-                                    HStack(spacing: 4) {
-                                        Text(logManager.errorsOnly ? "仅错误" : "错误")
-                                            .font(.system(size: 10))
-                                            .foregroundStyle(.secondary)
-                                        Text("\(logManager.errorCount)")
-                                            .font(.system(size: 11, weight: .bold, design: .monospaced))
-                                            .foregroundStyle(Color.red)
-                                    }
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 3)
-                                    .background(Color.red.opacity(logManager.errorsOnly ? 0.4 : 0.15))
-                                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                                    }
-                                    .buttonStyle(.plain)
-                                    .accessibilityLabel(logManager.errorsOnly ? "显示全部日志" : "只显示错误日志")
-                                }
-                                
                                 Button {
-                                    UIPasteboard.general.string = logManager.exportedText
+                                    logManager.errorsOnly = false
+                                    logManager.followsLatest = false
+                                } label: {
+                                    Text("全部 \(logManager.retainedLogs.count)")
+                                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                        .foregroundStyle(.white)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 3)
+                                        .background(Color.white.opacity(logManager.errorsOnly ? 0.08 : 0.28))
+                                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityValue(logManager.errorsOnly ? "未选中" : "已选中")
+
+                                Button {
+                                    logManager.errorsOnly = true
+                                    logManager.followsLatest = false
+                                } label: {
+                                    Text("错误 \(logManager.errorCount)")
+                                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                        .foregroundStyle(.white)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 3)
+                                        .background(Color.white.opacity(logManager.errorsOnly ? 0.28 : 0.08))
+                                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityValue(logManager.errorsOnly ? "已选中" : "未选中")
+
+                                Button {
+                                    UIPasteboard.general.string = logManager.filteredText
                                     HapticManager.shared.buttonPress()
                                 } label: {
-                                    Image(systemName: "doc.on.doc")
-                                        .font(.system(size: 16))
-                                        .foregroundStyle(.white.opacity(0.8))
-                                        .frame(width: 24, height: 24)
+                                    Image(systemName: "doc.on.doc.fill")
+                                        .font(.system(size: 9, weight: .semibold))
+                                        .foregroundStyle(Color.black.opacity(0.8))
+                                        .frame(width: 16, height: 16)
+                                        .background(Color.white.opacity(0.8), in: Circle())
                                 }
-                                .accessibilityLabel("复制全部日志")
-                                .contextMenu {
-                                    Button("复制错误日志") {
-                                        UIPasteboard.general.string = logManager.retainedLogs
-                                            .filter { $0.level == .error }
-                                            .map { "[\(logManager.formatTime($0.timestamp))] [ERR] \($0.message)" }
-                                            .joined(separator: "\n")
-                                    }
-                                }
+                                .accessibilityLabel(logManager.errorsOnly ? "复制错误日志" : "复制全部日志")
 
                                 Button {
                                     logManager.followsLatest.toggle()
@@ -116,7 +103,6 @@ struct GameLogConsoleOverlay: View {
                                     Image(systemName: logManager.followsLatest ? "arrow.down.to.line.circle.fill" : "arrow.down.to.line.circle")
                                         .font(.system(size: 16))
                                         .foregroundStyle(logManager.followsLatest ? Color.cyan : Color.white.opacity(0.8))
-                                        .frame(width: 24, height: 24)
                                 }
                                 .accessibilityLabel("跟随最新日志")
                                 .accessibilityValue(logManager.followsLatest ? "已开启" : "已关闭")

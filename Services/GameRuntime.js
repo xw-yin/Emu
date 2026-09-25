@@ -12,7 +12,11 @@
     let failed = false;
 
     function describe(value) {
-        if (value && value.stack) return String(value.stack);
+        if (value && value.stack) {
+            const summary = [value.name, value.message].filter(Boolean).join(': ');
+            const stack = String(value.stack);
+            return summary && !stack.includes(summary) ? summary + '\n' + stack : stack;
+        }
         if (value && value.message) return String(value.message);
         if (typeof value === 'string') return value;
         try { return JSON.stringify(value); } catch (_) { return String(value); }

@@ -6,6 +6,18 @@ const path = require('node:path');
 const runtime = fs.readFileSync(path.join(__dirname, '../Services/GameRuntime.js'), 'utf8');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
+test('MPP choice cancel fix preserves disabled rows and permits synthetic cancel branches', () => {
+    const server = fs.readFileSync(path.join(__dirname, '../Services/LocalGameServer.swift'), 'utf8');
+    const condition = server.match(/let fixed = "(this\.isCancelEnabled\(\).*?)"/)[1];
+    const check = new Function('index', 'type', 'return ' + condition);
+    const window = {maxItems: () => 2, isCancelEnabled: () => true,
+        isCommandEnabled(index) { return [{enabled: true}, {enabled: false}][index].enabled; }};
+    assert.equal(check.call(window, -1, -2), false);
+    assert.equal(check.call(window, 2, 3), false);
+    assert.equal(check.call(window, 1, 3), true);
+    assert.equal(check.call(window, 0, 3), false);
+});
+
 function environment({saves = {}, namespace = 'game-a', gameTitle = '', journal = new Map(), fetch: fetchImpl} = {}) {
     const logs = [], requests = [], timers = new Map(), events = new Map();
     let sequence = 0;
@@ -332,6 +344,10 @@ test('captured engine exceptions retain stack and call the original exception ha
     assert.match(env.logs.at(-1).message, /Error: plugin failed/);
     env.events.get('unhandledrejection')[0]({reason: error});
     assert.match(env.logs.at(-1).message, /plugin failed/);
+    const safariError = {name: 'TypeError', message: 'undefined is not an object', stack: '@http://localhost/rpg_windows.js:1352:29'};
+    env.ctx.SceneManager.catchException(safariError);
+    assert.match(env.logs.at(-1).message, /TypeError: undefined is not an object/);
+    assert.match(env.logs.at(-1).message, /rpg_windows.js:1352:29/);
 });
 test('watchdog reports missing database/scene without forcing startup', () => {
     const env = environment();
