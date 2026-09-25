@@ -106,8 +106,15 @@
     log('info', '存档快照已就绪（游戏脚本执行前），文件数: ' + Object.keys(cache).length);
 
     function mvName(id) {
-        if (!Number.isInteger(id)) throw new Error('Invalid save ID: ' + id);
-        return id < 0 ? 'config.rpgsave' : id === 0 ? 'global.rpgsave' : 'file' + id + '.rpgsave';
+        // 原版 MV 从不校验存档 id（'file%1.rpgsave'.format(id) 直接拼字符串），
+        // 插件（如 XdRs_GlobalData）会用字符串 key 调 StorageManager.load/save。
+        // 这里永不抛错：整数走原版命名，非常规 key 清洗成稳定的文件名。
+        const n = typeof id === 'number' ? id : Number(id);
+        if (Number.isInteger(n)) {
+            return n < 0 ? 'config.rpgsave' : n === 0 ? 'global.rpgsave' : 'file' + n + '.rpgsave';
+        }
+        const key = String(id).replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, 64) || 'custom';
+        return 'plugin_' + key + '.rpgsave';
     }
     function readMV(id) {
         const name = mvName(id);
