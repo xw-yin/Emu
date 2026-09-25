@@ -183,7 +183,7 @@ struct VirtualControllerOverlay: View {
         webView.callAsyncJavaScript(
             "if (!window.__emuKeyEvent) throw new Error('输入桥尚未就绪'); window.__emuKeyEvent(key, code, isDown); return true;",
             arguments: ["key": key, "code": code, "isDown": isDown],
-            in: nil, contentWorld: .page
+            in: nil, in: .page
         ) { result in
             if case .failure(let error) = result {
                 GameLogManager.shared.log("虚拟按键发送失败: \(code): \(error.localizedDescription)", level: .error)
