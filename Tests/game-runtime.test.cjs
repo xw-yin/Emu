@@ -62,6 +62,20 @@ function mz(env) {
     env.ctx.__emuInstallRuntime();
     return env.ctx.StorageManager;
 }
+test('title frame loader prefetches only a neighbour and does not preload the full animation', () => {
+    const env = environment();
+    const urls = [];
+    env.ctx.Bitmap = {load(url) { urls.push(url); return {isReady: () => true}; }};
+    const data = {src_img: Array.from({length: 102}, (_, i) => 'frame' + i), src_img_file: 'img/titles1/', smooth: false};
+    const first = env.ctx.__emuTitleFrame(data, 0);
+    assert.equal(urls.length, 2);
+    assert.equal(env.ctx.__emuTitleFrame(data, 0), first);
+    env.ctx.__emuTitleFrame(data, 1);
+    assert.equal(urls.length, 3);
+    for (let i = 2; i < 102; i++) env.ctx.__emuTitleFrame(data, i);
+    assert.equal(urls.length, 103, 'only current and next frames loaded during traversal');
+    assert.notEqual(env.ctx.__emuTitleFrame(data, 0), first, 'old frame was evicted rather than pinned');
+});
 test('returning to library pauses and resumes the same scene without reviving a stopped engine', () => {
     const env = environment();
     const scene = {progress: 42};

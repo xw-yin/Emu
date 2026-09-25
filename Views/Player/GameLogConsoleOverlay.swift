@@ -6,6 +6,7 @@ struct GameLogConsoleOverlay: View {
     @ObservedObject var logManager = GameLogManager.shared
     
     var body: some View {
+        GeometryReader { geometry in
         ZStack(alignment: .topLeading) {
             if logManager.isVisible {
                 if logManager.isCollapsed {
@@ -47,16 +48,18 @@ struct GameLogConsoleOverlay: View {
                                 Circle()
                                     .fill(logManager.isGameReady ? Color.green : Color.orange)
                                     .frame(width: 8, height: 8)
+                                if geometry.size.width > geometry.size.height {
                                 Text(logManager.isGameReady ? "游戏已就绪" : "正在加载资源...")
                                     .font(.system(size: 13, weight: .bold, design: .rounded))
                                     .foregroundStyle(.white)
+                                }
                             }
                             
                             Spacer()
                             
                             HStack(spacing: 8) {
                                 filterButton("全部", level: nil)
-                                filterButton("WARN", level: .warning)
+                                filterButton("警告", level: .warning)
                                 filterButton("错误", level: .error)
 
                                 Button {
@@ -178,13 +181,14 @@ struct GameLogConsoleOverlay: View {
             }
         }
         .allowsHitTesting(true)
+        }
     }
     private func filterButton(_ title: String, level: GameLogManager.LogItem.Level?) -> some View {
         Button {
             logManager.selectedLevel = level
             logManager.followsLatest = false
         } label: {
-            Text(title)
+            Text("\(title) \(logManager.retainedLogs.filter { level == nil || $0.level == level }.count)")
                 .font(.system(size: 11, weight: .bold))
                 .foregroundStyle(.white)
                 .padding(.horizontal, 6)

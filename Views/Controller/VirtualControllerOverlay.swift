@@ -8,6 +8,8 @@ struct VirtualControllerOverlay: View {
     let onExitGame: () -> Void
     let onCloseGame: () -> Void
     @State private var confirmClose = false
+    @State private var toolbarCollapsed = false
+    @State private var dpadDragStart: CGPoint?
     
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("keepScreenAwake") private var keepScreenAwake = true
@@ -47,6 +49,7 @@ struct VirtualControllerOverlay: View {
                         Spacer(minLength: 8)
                         
                         // 灵动胶囊工具栏：宽度充足时完整并列，宽度受限/横屏一行展示不下时支持丝滑横向滑动
+                        if !toolbarCollapsed {
                         ViewThatFits(in: .horizontal) {
                             toolbarButtons
                                 .padding(6)
@@ -61,6 +64,16 @@ struct VirtualControllerOverlay: View {
                             .frame(height: 48)
                             .liquidGlass(cornerRadius: 30, strokeOpacity: 0.2)
                         }
+                        }
+                        Button { withAnimation { toolbarCollapsed.toggle() } } label: {
+                            Image(systemName: toolbarCollapsed ? "chevron.left" : "chevron.right")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(.white.opacity(0.85))
+                                .frame(width: 36, height: 36)
+                                .background(.ultraThinMaterial)
+                                .clipShape(Circle())
+                        }
+                        .accessibilityLabel(toolbarCollapsed ? "展开工具栏" : "折叠工具栏")
                     }
                     .padding(.horizontal, 20)
                     .padding(.top, 10)
@@ -101,23 +114,34 @@ struct VirtualControllerOverlay: View {
                     Spacer()
                 }
                 
-                // 左下角：流体十字键
-                VStack {
-                    Spacer()
-                    HStack {
-                        GlassDpadView { direction, isDown in
-                            guard let dir = direction else { return }
-                            sendKeyEvent(key: dir.rawValue, code: dir.rawValue, isDown: isDown)
-                        }
-                        .padding(.leading, 28)
-                        .padding(.bottom, 24)
-                        
-                        Spacer()
+                GlassDpadView { direction, isDown in
+                    guard !isLayoutEditMode, let dir = direction else { return }
+                    sendKeyEvent(key: dir.rawValue, code: dir.rawValue, isDown: isDown)
+                }
+                .allowsHitTesting(!isLayoutEditMode)
+                .overlay {
+                    if isLayoutEditMode {
+                        Circle().strokeBorder(Color.yellow, style: StrokeStyle(lineWidth: 2, dash: [4, 4]))
+                            .contentShape(Circle())
+                            .gesture(DragGesture().onChanged { value in
+                                if dpadDragStart == nil {
+                                    dpadDragStart = CGPoint(x: profile.dpadRelativeX, y: profile.dpadRelativeY)
+                                }
+                                guard let start = dpadDragStart else { return }
+                                profile.dpadRelativeX = min(max(0, start.x + value.translation.width), max(0, proxy.size.width - 160))
+                                profile.dpadRelativeY = min(max(0, start.y - value.translation.height), max(0, proxy.size.height - 230))
+                            }.onEnded { _ in
+                                dpadDragStart = nil
+                                KeyMappingManager.shared.saveProfile(profile, for: gameTitle)
+                            })
                     }
                 }
+                .frame(width: 160, height: 160)
+                .position(x: min(max(80, profile.dpadRelativeX + 80), max(80, proxy.size.width - 80)),
+                          y: min(max(150, proxy.size.height - profile.dpadRelativeY - 80), max(150, proxy.size.height - 80)))
                 .opacity(isControllerHidden ? 0 : controllerOpacity)
                 .allowsHitTesting(!isControllerHidden)
-                
+
                 // 右下角：动态自定义动作按键群 (根据坐标定位)
                 ForEach($profile.actionButtons) { $btn in
                     renderDraggableButton(btn: $btn, screenSize: proxy.size)

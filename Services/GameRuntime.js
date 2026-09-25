@@ -345,6 +345,28 @@
         scheduleViewportRefresh();
     }
     const heldKeys = new Map();
+    const titleFrames = new WeakMap();
+    window.__emuTitleFrame = (data, index) => {
+        let frames = titleFrames.get(data);
+        if (!frames) { frames = new Map(); titleFrames.set(data, frames); }
+        const count = data.src_img.length;
+        if (!count) throw new Error('标题动画未配置图片');
+        const wanted = [index, (index + (data.back_run ? count - 1 : 1)) % count];
+        for (const id of wanted) {
+            if (!frames.has(id)) {
+                const bitmap = window.Bitmap.load(data.src_img_file + data.src_img[id] + '.png');
+                bitmap.smooth = data.smooth;
+                if (data.tint) bitmap.addLoadListener(() => bitmap.rotateHue(data.tint));
+                frames.set(id, bitmap);
+            }
+        }
+        // Avoid ImageManager's shared cache: the plugin previously pinned every
+        // full-resolution bitmap both in Game_Temp and in its title sprite data.
+        for (const id of frames.keys()) if (!wanted.includes(id)) frames.delete(id);
+        const current = frames.get(index);
+        if (current.isError?.()) throw new Error('标题动画图片读取失败: ' + data.src_img[index]);
+        return current;
+    };
     function keyNumber(key, code) {
         if (/^Key[A-Z]$/.test(code)) return code.charCodeAt(3);
         if (/^Digit[0-9]$/.test(code)) return code.charCodeAt(5);

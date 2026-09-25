@@ -582,6 +582,24 @@ final class LocalGameServer: ObservableObject {
             fileData = Data(source.replacingOccurrences(of: broken, with: fixed).utf8)
         }
 
+        if targetFileURL.lastPathComponent.lowercased() == "drill_titletiledgif.js",
+           var source = String(data: fileData, encoding: .utf8) {
+            let preload = "this._drill_TTG_preloadTank.push( ImageManager.loadBitmap( temp_data['src_img_file'], src_img_list[j], temp_data['tint'], temp_data['smooth'] ) );"
+            let create = "temp_sprite_data['src_bitmaps'].push( ImageManager.loadBitmap( temp_sprite_data['src_img_file'], temp_sprite_data['src_img'][j], temp_sprite_data['tint'], temp_sprite_data['smooth'] ) );"
+            let initial = "temp_sprite.bitmap = temp_sprite_data['src_bitmaps'][0];"
+            let advance = "temp_sprite.bitmap = temp_data['src_bitmaps'][inter];"
+            let timing = "temp_sprite['_time'] += 1;"
+            // Apply as one adapter only to the verified plugin implementation.
+            if [preload, create, initial, advance, timing].allSatisfy({ source.contains($0) }) {
+                source = source.replacingOccurrences(of: preload, with: "/* Frames are loaded on demand by Emu. */")
+                source = source.replacingOccurrences(of: create, with: "temp_sprite_data['src_bitmaps'].push(null);")
+                source = source.replacingOccurrences(of: initial, with: "temp_sprite.bitmap = window.__emuTitleFrame(temp_sprite_data, 0);")
+                source = source.replacingOccurrences(of: timing, with: "if (!temp_sprite.visible) continue; temp_sprite['_time'] += 1;")
+                source = source.replacingOccurrences(of: advance, with: "var nextFrame = window.__emuTitleFrame(temp_data, inter); if (!nextFrame.isReady()) { temp_sprite['_time'] -= 1; continue; } temp_sprite.bitmap = nextFrame;")
+                fileData = Data(source.utf8)
+            }
+        }
+
         let totalCount = fileData.count
         let mime = mimeType(for: targetFileURL.pathExtension)
         

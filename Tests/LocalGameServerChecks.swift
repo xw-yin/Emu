@@ -76,6 +76,19 @@ struct LocalGameServerChecks {
         try Data(choiceSource.utf8).write(to: root.appendingPathComponent("js/MPP_ChoiceEX.js"))
         let (choice, _) = try await request("/js/MPP_ChoiceEX.js")
         try require(String(decoding: choice, as: UTF8.self).contains("index >= 0 && index < this.maxItems()"), "Guard synthetic cancel choice indices")
+        let titleSource = """
+        this._drill_TTG_preloadTank.push( ImageManager.loadBitmap( temp_data['src_img_file'], src_img_list[j], temp_data['tint'], temp_data['smooth'] ) );
+        temp_sprite_data['src_bitmaps'].push( ImageManager.loadBitmap( temp_sprite_data['src_img_file'], temp_sprite_data['src_img'][j], temp_sprite_data['tint'], temp_sprite_data['smooth'] ) );
+        temp_sprite.bitmap = temp_sprite_data['src_bitmaps'][0];
+        temp_sprite.bitmap = temp_data['src_bitmaps'][inter];
+        temp_sprite['_time'] += 1;
+        """
+        try Data(titleSource.utf8).write(to: root.appendingPathComponent("js/Drill_TitleTiledGif.js"))
+        let (title, _) = try await request("/js/Drill_TitleTiledGif.js")
+        let adaptedTitle = String(decoding: title, as: UTF8.self)
+        try require(!adaptedTitle.contains("ImageManager.loadBitmap"), "No full-animation preload")
+        try require(adaptedTitle.contains("window.__emuTitleFrame(temp_data, inter)"), "Demand-loaded title frame")
+        try require(adaptedTitle.contains("if (!temp_sprite.visible) continue;"), "Skip hidden animations")
         let (_, missing) = try await request("/js/missing.js")
         try require(missing.statusCode == 404, "Missing JS must not be replaced with success stubs")
         let (tail, partial) = try await request("/audio.ogg", range: "bytes=-3")
