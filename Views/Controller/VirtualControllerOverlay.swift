@@ -63,6 +63,7 @@ struct VirtualControllerOverlay: View {
                             .scrollBounceBehavior(.basedOnSize)
                             .frame(height: 48)
                             .liquidGlass(cornerRadius: 30, strokeOpacity: 0.2)
+                            .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
                         }
                         }
                         Button { withAnimation { toolbarCollapsed.toggle() } } label: {
