@@ -142,6 +142,52 @@ test('title frame loader prefetches only a neighbour and does not preload the fu
     assert.equal(urls.length, 103, 'only current and next frames loaded during traversal');
     assert.notEqual(env.ctx.__emuTitleFrame(data, 0), first, 'old frame was evicted rather than pinned');
 });
+test('MV repeated library round trips cancel hidden frames and keep exactly one update loop', () => {
+    const env = environment();
+    const frames = new Map();
+    let next = 0, updates = 0, now = 1000;
+    env.ctx.requestAnimationFrame = fn => { frames.set(++next, fn); return next; };
+    env.ctx.cancelAnimationFrame = id => frames.delete(id);
+    env.ctx.SceneManager = {
+        _stopped: false, _currentTime: 0, _accumulator: 1,
+        _getTimeInMs: () => now,
+        stop() { this._stopped = true; },
+        resume() { this._stopped = false; this.requestUpdate(); },
+        update() { this.updateMain(); },
+        updateMain() { updates++; this.requestUpdate(); }
+    };
+    vm.runInContext('SceneManager.requestUpdate = function() { if (!this._stopped) requestAnimationFrame(this.update.bind(this)); };', env.ctx);
+    env.ctx.__emuInstallRuntime();
+    const manager = env.ctx.SceneManager;
+    manager.requestUpdate();
+    for (let i = 0; i < 10; i++) {
+        assert.equal(frames.size, 1);
+        const stale = [...frames.values()][0];
+        env.ctx.__emuSetPaused(true);
+        assert.equal(frames.size, 0);
+        // A callback already dispatched by WebKit must not advance a hidden game.
+        stale();
+        assert.equal(updates, i);
+        now += 60000;
+        env.ctx.__emuSetPaused(false);
+        stale();
+        assert.equal(updates, i);
+        assert.equal(manager._currentTime, now);
+        assert.equal(manager._accumulator, 0);
+        manager.requestUpdate();
+        env.ctx.__emuInstallRuntime();
+        assert.equal(frames.size, 1);
+        const [id, callback] = [...frames.entries()][0];
+        frames.delete(id);
+        callback();
+        assert.equal(updates, i + 1);
+        assert.equal(frames.size, 1);
+    }
+    manager.stop();
+    assert.equal(frames.size, 0);
+    assert.equal(env.logs.filter(item => item.message.includes('游戏恢复首帧')).length, 10);
+});
+
 test('returning to library pauses and resumes the same scene without reviving a stopped engine', () => {
     const env = environment();
     const scene = {progress: 42};

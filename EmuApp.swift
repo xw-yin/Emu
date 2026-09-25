@@ -34,6 +34,10 @@ final class OrientationDelegate: NSObject, UIApplicationDelegate {
                 window.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
                 window.rootViewController?.presentedViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
             }
+            // Lock/unlock changes allowed orientations, not the current geometry.
+            // Avoid asking windowed iPad scenes to rotate on every presentation.
+            let current = UIInterfaceOrientationMask(rawValue: 1 << scene.interfaceOrientation.rawValue)
+            guard !mask.contains(current) else { continue }
             scene.requestGeometryUpdate(.iOS(interfaceOrientations: mask)) { error in
                 GameLogManager.shared.log("屏幕方向切换失败: \(error.localizedDescription)", level: .warning)
             }

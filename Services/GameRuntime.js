@@ -464,6 +464,8 @@
     let resumeScene = false;
     let pausedAudio = [];
     let pausedMedia = [];
+    let pendingSceneFrame = null;
+    let resumeStartedAt = null;
     window.__emuSetPaused = paused => {
         if (hostPaused === paused) return;
         hostPaused = paused;
@@ -478,7 +480,17 @@
             pausedMedia = [...(document.querySelectorAll?.('audio, video') || [])].filter(media => !media.paused);
             for (const media of pausedMedia) media.pause();
         } else {
-            if (resumeScene) manager?.resume?.();
+            if (resumeScene) {
+                resumeStartedAt = Date.now();
+                manager?.resume?.();
+                // Plugins may replace updateMain without updating resume's clock.
+                if (typeof manager?._currentTime === 'number') {
+                    const clock = manager._getTimeInMs || manager._getTimeInMsWithoutMobileSafari;
+                    if (typeof clock === 'function') manager._currentTime = clock.call(manager);
+                }
+                if (typeof manager?._accumulator === 'number') manager._accumulator = 0;
+                previousFrameTime = 0;
+            }
             resumeScene = false;
             for (const context of pausedAudio) context.resume().catch(error => log('warning', describe(error)));
             pausedAudio = [];
@@ -522,7 +534,34 @@
     function install() {
         installStorage();
         installViewport();
+        const manager = window.SceneManager;
+        // MV's stock scheduler does not retain its RAF handle. A hidden WKWebView
+        // can retain the old callback, then resume() adds a second endless loop.
+        // Only replace that known scheduler; custom/plugin schedulers stay intact.
+        if (manager && /requestAnimationFrame\(this\.update\.bind\(this\)\)/.test(String(manager.requestUpdate))) {
+            wrap(manager, 'requestUpdate', () => function () {
+                if (hostPaused || this._stopped || pendingSceneFrame !== null) return;
+                const frame = window.requestAnimationFrame(() => {
+                    if (pendingSceneFrame !== frame) return;
+                    pendingSceneFrame = null;
+                    if (!hostPaused && !this._stopped) this.update();
+                });
+                pendingSceneFrame = frame;
+            });
+        }
+        wrap(manager, 'stop', original => function (...args) {
+            if (pendingSceneFrame !== null) {
+                window.cancelAnimationFrame(pendingSceneFrame);
+                pendingSceneFrame = null;
+            }
+            return original.apply(this, args);
+        });
         wrap(window.SceneManager, 'updateMain', original => function (...args) {
+            if (hostPaused) return;
+            if (resumeStartedAt !== null) {
+                log('info', '游戏恢复首帧: ' + (Date.now() - resumeStartedAt) + 'ms，场景: ' + (this._scene?.constructor?.name || '未知'));
+                resumeStartedAt = null;
+            }
             if (performanceEnabled && !hostPaused) {
                 const now = window.performance.now();
                 if (previousFrameTime && frameIntervals.length < 240) frameIntervals.push(now - previousFrameTime);
