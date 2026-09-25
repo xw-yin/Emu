@@ -130,7 +130,7 @@ struct GameWebView: UIViewRepresentable {
                             (window.AudioManager && window.AudioManager._context) ||
                             (window.SoundManager && window.SoundManager._context);
                 if (ctx && ctx.state === 'suspended') {
-                    ctx.resume();
+                    ctx.resume().catch(error => console.warn("音频激活未完成: " + (error.name || "Error") + ": " + error.message));
                 }
             };
             ['touchstart', 'touchend', 'click', 'pointerdown'].forEach(evt => {

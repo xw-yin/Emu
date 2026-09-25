@@ -16,6 +16,7 @@ struct GamePlayerView: View {
     @State private var errorMessage: String? = nil
     @State private var didCleanup = false
     @Environment(\.scenePhase) private var scenePhase
+    @AppStorage("gameOrientation") private var gameOrientation = "auto"
     @AppStorage("keepScreenAwake") private var keepScreenAwake = true
     
     var body: some View {
@@ -75,6 +76,7 @@ struct GamePlayerView: View {
         .onReceive(server.$lastError) { message in
             if let message = message { errorMessage = message }
         }
+        .onChange(of: gameOrientation) { _ in OrientationDelegate.apply(isPresented ? gameOrientation : "auto") }
         .onChange(of: keepScreenAwake) { _ in updateIdleTimer() }
         .onChange(of: scenePhase) { _ in updateIdleTimer() }
         .onChange(of: closeRequest) { _ in exitGame() }
@@ -123,6 +125,7 @@ struct GamePlayerView: View {
 
     private func updatePresentation() {
         updateIdleTimer()
+        OrientationDelegate.apply(isPresented ? gameOrientation : "auto")
         let paused = !isPresented || UIApplication.shared.applicationState != .active
         webView?.evaluateJavaScript("window.__emuSetPaused?.(\(paused ? "true" : "false"))", completionHandler: nil)
     }
@@ -141,6 +144,7 @@ struct GamePlayerView: View {
     private func cleanup() {
         guard !didCleanup else { return }
         didCleanup = true
+        OrientationDelegate.apply("auto")
         LocalGameServer.shared.stop()
         GameLibraryManager.shared.releaseGameAccess()
         UIApplication.shared.isIdleTimerDisabled = false

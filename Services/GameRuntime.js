@@ -38,7 +38,11 @@
         log('error', event.message ? describe(event.error || event.message) :
             '资源加载失败: ' + (target?.src || target?.href || 'unknown'));
     }, true);
-    window.addEventListener('unhandledrejection', event => log('error', '异步错误: ' + describe(event.reason)));
+    const asyncSources = new WeakMap();
+    window.addEventListener('unhandledrejection', event => log('error', '异步错误: ' + describe(event.reason) +
+        '\n来源: ' + (asyncSources.get(event.promise) || '未知') +
+        '，场景: ' + (window.SceneManager?._scene?.constructor?.name || '未创建') +
+        '，页面: ' + (document.visibilityState || 'unknown')));
 
     function validName(name) {
         if (typeof name !== 'string' || !/^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(name)) {
@@ -62,6 +66,9 @@
                 signal: controller.signal
             });
             if (!response.ok) throw new Error('HTTP ' + response.status);
+        } catch (error) {
+            if (controller.signal.aborted) throw new Error('存档写回超时（10秒）: ' + name);
+            throw error;
         } finally { clearTimeout(timeout); }
     }
     function enqueue(name, operation) {
@@ -478,6 +485,13 @@
     function install() {
         installStorage();
         installViewport();
+        wrap(window.HTMLMediaElement?.prototype, 'play', original => function (...args) {
+            const result = original.apply(this, args);
+            if (result && typeof result.then === 'function') {
+                asyncSources.set(result, '媒体播放: ' + (this.currentSrc || this.src || '未设置地址'));
+            }
+            return result;
+        });
         // MV + PIXI 4 Canvas keeps a pattern from the previous tiling bitmap.
         // Animated title frames change bitmaps but MV only resets tilingTexture.
         wrap(window.TilingSprite?.prototype, '_onBitmapLoad', original => function (...args) {

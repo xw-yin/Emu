@@ -10,6 +10,8 @@ struct VirtualControllerOverlay: View {
     @State private var confirmClose = false
     @State private var toolbarCollapsed = false
     @State private var dpadDragStart: CGPoint?
+    @State private var actionDragStart: [UUID: CGPoint] = [:]
+    @AppStorage("gameOrientation") private var gameOrientation = "auto"
     
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("keepScreenAwake") private var keepScreenAwake = true
@@ -67,7 +69,7 @@ struct VirtualControllerOverlay: View {
                         }
                         }
                         Button { withAnimation { toolbarCollapsed.toggle() } } label: {
-                            Image(systemName: toolbarCollapsed ? "chevron.left" : "chevron.right")
+                            Image(systemName: toolbarCollapsed ? "chevron.down" : "chevron.up")
                                 .font(.system(size: 14, weight: .semibold))
                                 .foregroundStyle(.white.opacity(0.85))
                                 .frame(width: 36, height: 36)
@@ -180,8 +182,9 @@ struct VirtualControllerOverlay: View {
     // MARK: - 渲染动态可拖拽按键
     @ViewBuilder
     private func renderDraggableButton(btn: Binding<CustomActionButton>, screenSize: CGSize) -> some View {
-        let posX = screenSize.width + btn.wrappedValue.relativeX
-        let posY = screenSize.height + btn.wrappedValue.relativeY
+        let margin: CGFloat = 38
+        let posX = min(max(margin, screenSize.width + btn.wrappedValue.relativeX), max(margin, screenSize.width - margin))
+        let posY = min(max(100, screenSize.height + btn.wrappedValue.relativeY), max(100, screenSize.height - margin))
         
         ZStack {
             GlassActionButton(
@@ -207,12 +210,14 @@ struct VirtualControllerOverlay: View {
             isLayoutEditMode ?
             DragGesture()
                 .onChanged { value in
-                    let newRelX = value.location.x - screenSize.width
-                    let newRelY = value.location.y - screenSize.height
-                    btn.wrappedValue.relativeX = newRelX
-                    btn.wrappedValue.relativeY = newRelY
+                    let id = btn.wrappedValue.id
+                    if actionDragStart[id] == nil { actionDragStart[id] = CGPoint(x: posX, y: posY) }
+                    guard let start = actionDragStart[id] else { return }
+                    btn.wrappedValue.relativeX = min(max(margin, start.x + value.translation.width), max(margin, screenSize.width - margin)) - screenSize.width
+                    btn.wrappedValue.relativeY = min(max(100, start.y + value.translation.height), max(100, screenSize.height - margin)) - screenSize.height
                 }
                 .onEnded { _ in
+                    actionDragStart[btn.wrappedValue.id] = nil
                     HapticManager.shared.buttonRelease()
                     KeyMappingManager.shared.saveProfile(profile, for: gameTitle)
                 }
@@ -315,6 +320,22 @@ struct VirtualControllerOverlay: View {
                 .clipShape(Capsule())
             }
             
+            Menu {
+                Picker("屏幕方向", selection: $gameOrientation) {
+                    Text("自动旋转").tag("auto")
+                    Text("锁定竖屏").tag("portrait")
+                    Text("锁定横屏").tag("landscape")
+                }
+            } label: {
+                Image(systemName: gameOrientation == "auto" ? "rotate.right" : "lock.rotation")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.85))
+                    .frame(width: 36, height: 36)
+                    .background(.ultraThinMaterial)
+                    .clipShape(Circle())
+            }
+            .accessibilityLabel("屏幕方向锁定")
+
             // 透明度调节
             Menu {
                 Button("清晰 (100%)") { controllerOpacity = 1.0 }
