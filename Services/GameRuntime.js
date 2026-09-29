@@ -4,7 +4,11 @@
     'use strict';
     const bootstrap = window.__emuBootstrap;
     if (!bootstrap) throw new Error('Emu save snapshot is missing');
-    const cache = Object.assign(Object.create(null), bootstrap.saves);
+    // 内存优化：bootstrap 只携带存档元信息（savesMeta: 文件名 -> {size}），正文按需
+    // 经 GET /save/<name> 拉取。cache 只保留实际访问过的存档，不再常驻全量巨型字符串，
+    // 也不再有 atob + 逐字符解码的瞬时内存峰值（这是之前进读档面板时 WebKit 被 jetsam 的主因）。
+    const meta = bootstrap.savesMeta || Object.create(null);
+    const cache = Object.create(null);
     const prefix = 'emu.pending.' + bootstrap.namespace + '.';
     const pending = Object.create(null);
     const queues = new Map();
@@ -51,9 +55,10 @@
         return name;
     }
     const has = name => Object.prototype.hasOwnProperty.call(cache, name);
+    const hasFile = name => Object.prototype.hasOwnProperty.call(meta, name);
     function update(name, value) {
-        if (value === null) delete cache[name];
-        else cache[name] = value;
+        if (value === null) { delete cache[name]; delete meta[name]; }
+        else { cache[name] = value; meta[name] = { size: String(value).length }; }
     }
     async function request(name, value) {
         const controller = new AbortController();
@@ -79,6 +84,37 @@
         next.then(cleanup, cleanup);
         return next;
     }
+    // 按需拉取单个存档正文（幂等；已有缓存或并发写入时不覆盖新值）
+    async function prefetchOne(name) {
+        const file = validName(name).toLowerCase();
+        if (has(file)) return cache[file];
+        if (!hasFile(file)) throw new Error('存档不存在: ' + file);
+        const resp = await fetch('/save/' + encodeURIComponent(file));
+        if (!resp.ok) throw new Error('存档读取失败 HTTP ' + resp.status + ': ' + file);
+        const text = await resp.text();
+        // 双保险：fetch 在途时若被 write/remove 改过缓存或删了元信息，不覆盖/不复活。
+        if (!has(file) && hasFile(file)) cache[file] = text;
+        return cache[file];
+    }
+    let prefetchAllPromise = null;
+    function prefetchAllSaves() {
+        if (prefetchAllPromise) return prefetchAllPromise;
+        prefetchAllPromise = (async () => {
+            const names = Object.keys(meta);
+            let ok = 0;
+            for (const name of names) {
+                try { await prefetchOne(name); ok++; }
+                catch (e) { log('warning', '存档预热跳过: ' + name + ': ' + describe(e)); }
+            }
+            log('info', '存档预热完成: ' + ok + '/' + names.length + '（逐个拉取，常驻峰值已消除）');
+        })();
+        return prefetchAllPromise;
+    }
+    // 启动即后台预热：逐个拉取、增量进缓存，保证插件/同步读档接口的兼容性，
+    // 同时避免一次性巨型字符串的瞬时峰值。
+    prefetchAllSaves();
+    // 供测试等待预热完成；生产环境直接使用后台预热。
+    window.__emuPrefetchSaves = prefetchAllSaves;
     window.__emuFlushSaves = () => Promise.allSettled([...queues.values()]);
     function flush(name, value) {
         return enqueue(name, async () => {
@@ -114,7 +150,7 @@
         }
         for (const name of Object.keys(pending)) flush(name, pending[name]);
     } catch (error) { log('error', '无法恢复待写回存档: ' + describe(error)); }
-    log('info', '存档快照已就绪（游戏脚本执行前），文件数: ' + Object.keys(cache).length);
+    log('info', '存档元信息已就绪（游戏脚本执行前），文件数: ' + Object.keys(meta).length + '，正文按需加载');
 
     function mvName(id) {
         // 原版 MV 从不校验存档 id（'file%1.rpgsave'.format(id) 直接拼字符串），
@@ -185,13 +221,15 @@
         const mz = typeof sm.loadZip === 'function' && typeof sm.saveZip === 'function';
         if (!mv && !mz) return; // Wait until the managers script has finished.
         if (mv) {
-            migrateMV(sm);
+            prefetchAllSaves().then(() => {
+                try { migrateMV(sm); } catch (e) { log('error', '旧浏览器存档恢复失败: ' + describe(e)); }
+            });
             sm.load = sm.loadFromLocalFile = readMV;
             sm.save = sm.saveToLocalFile = function (id, json) {
                 JSON.parse(json);
                 writeMV(mvName(id), window.LZString.compressToBase64(json));
             };
-            sm.exists = sm.localFileExists = id => has(mvName(id));
+            sm.exists = sm.localFileExists = id => hasFile(mvName(id));
             sm.remove = sm.removeLocalFile = id => writeMV(mvName(id), null);
             sm.backup = id => {
                 const name = mvName(id);
@@ -213,6 +251,10 @@
             sm.loadZip = sm.loadFromLocalFile = async name => {
                 const file = nameFor(name);
                 if (queues.has(file)) await queues.get(file);
+                if (!has(file) && hasFile(file)) {
+                    try { await prefetchOne(file); }
+                    catch (error) { log('warning', '存档按需加载失败: ' + file + ': ' + describe(error)); }
+                }
                 if (!has(file)) {
                     if (sm.loadFromForage) return sm.loadFromForage(name);
                     throw new Error('存档不存在: ' + file);
@@ -230,7 +272,7 @@
                 });
             };
             // MZ exists/localFileExists are synchronous booleans, not Promises.
-            sm.exists = sm.localFileExists = name => has(nameFor(name)) || !!sm.forageExists?.(name);
+            sm.exists = sm.localFileExists = name => hasFile(nameFor(name)) || !!sm.forageExists?.(name);
             sm.remove = sm.removeLocalFile = name => {
                 const file = nameFor(name);
                 return enqueue(file, async () => {
@@ -249,9 +291,10 @@
     function saveDiag() {
         const report = {engine: window.Utils?.RPGMAKER_NAME || null, files: [], game: null, slots: []};
         try {
-            for (const name of Object.keys(cache).sort()) {
-                const entry = {name, size: String(cache[name]).length, stage: 'ok'};
+            for (const name of Object.keys(meta).sort()) {
+                const entry = {name, size: (meta[name] && meta[name].size) ?? 0, stage: has(name) ? 'ok' : 'not-loaded'};
                 try {
+                    if (!has(name)) { report.files.push(entry); continue; }
                     const data = JSON.parse(readRaw(name));
                     if (name === 'global.rpgsave') {
                         entry.kind = 'global-index';
@@ -273,7 +316,7 @@
             }
             const dm = window.DataManager, sm = window.StorageManager;
             const existsConsistent = !!sm && [0, 1, 5].every(id => {
-                try { return !!sm.exists?.(id) === has(mvName(id)); } catch (_) { return false; }
+                try { return !!sm.exists?.(id) === hasFile(mvName(id)); } catch (_) { return false; }
             });
             report.game = {
                 title: window.$dataSystem?.gameTitle ?? null,

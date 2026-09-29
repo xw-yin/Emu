@@ -321,7 +321,10 @@ final class LocalGameServer: ObservableObject {
                     "namespace": namespace,
                     "session": self.sessionID.uuidString,
                     "gameTitle": gameTitle,
-                    "saves": try self.readSaves()
+                    // 内存优化：只下发存档元信息（文件名→字节数），正文由 JS 按需
+                    // 经 GET /save/<name> 拉取。不再把全量存档拼进 user script，
+                    // 避免 atob/逐字符解码的瞬时内存峰值与常驻巨型字符串。
+                    "savesMeta": try self.readSavesMeta()
                 ])
             }
             DispatchQueue.main.async { completion(result) }
@@ -411,6 +414,28 @@ final class LocalGameServer: ObservableObject {
         if let error = coordinationError { throw error }
         guard let result = result else { throw CocoaError(.fileReadUnknown) }
         return try result.get()
+    }
+
+    /// 存档元信息：文件名(小写)→["size": 字节数]，供 JS 按需拉取正文。
+    /// 目录解析与 readSaves()/saveURL() 保持一致（含外部独立存档目录）。
+    private func readSavesMeta() throws -> [String: [String: Any]] {
+        guard let root = rootDirectoryURL else { throw CocoaError(.fileNoSuchFile) }
+        let directory = persistentSaveDirectory ?? resolveCaseInsensitiveFile(root: root, relativePath: "save") ?? root.appendingPathComponent("save")
+        let saveRoot = persistentSaveDirectory ?? root
+        guard contained(directory, in: saveRoot) else { throw CocoaError(.fileReadNoPermission) }
+        guard FileManager.default.fileExists(atPath: directory.path) else { return [:] }
+        var meta: [String: [String: Any]] = [:]
+        for file in try FileManager.default.contentsOfDirectory(atPath: directory.path) where isSaveName(file) {
+            let url = directory.appendingPathComponent(file)
+            guard contained(url, in: saveRoot) else { throw CocoaError(.fileReadNoPermission) }
+            let key = file.lowercased()
+            guard meta[key] == nil else {
+                throw NSError(domain: "Emu.Save", code: 1, userInfo: [NSLocalizedDescriptionKey: "存档文件名大小写冲突: \(file)"])
+            }
+            let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue ?? 0
+            meta[key] = ["size": size]
+        }
+        return meta
     }
 
     private func readSaves() throws -> [String: String] {

@@ -21,8 +21,11 @@ test('MPP choice cancel fix preserves disabled rows and permits synthetic cancel
 function environment({saves = {}, namespace = 'game-a', gameTitle = '', journal = new Map(), fetch: fetchImpl} = {}) {
     const logs = [], requests = [], timers = new Map(), events = new Map();
     let sequence = 0;
+    // 新契约：bootstrap 只带元信息（文件名 -> {size}），正文走 GET /save/<name> 按需拉取。
+    const savesMeta = Object.fromEntries(
+        Object.entries(saves).map(([name, text]) => [name, {size: text.length}]));
     const ctx = {
-        __emuBootstrap: {saves, namespace, gameTitle, session: 'session-a'},
+        __emuBootstrap: {savesMeta, namespace, gameTitle, session: 'session-a'},
         console: {log() {}, warn() {}, error() {}},
         webkit: {messageHandlers: {emuLog: {postMessage(message) { logs.push(message); }}}},
         AbortController,
@@ -41,7 +44,21 @@ function environment({saves = {}, namespace = 'game-a', gameTitle = '', journal 
         document: {readyState: 'complete', addEventListener() {}},
         fetch(url, options) {
             requests.push({url, ...options});
-            return fetchImpl ? fetchImpl(url, options) : Promise.resolve({ok: true, status: 200});
+            if (fetchImpl) return fetchImpl(url, options);
+            // 默认桩：GET /save/<name> 从 saves 表提供正文（带 text()），写/删一律成功。
+            const path = String(url).split('?')[0];
+            if (path.startsWith('/save/')) {
+                // 写/删一律成功；只有 GET 读才按初始表返回（缺失则 404）。
+                if (!options || !options.method || options.method === 'GET') {
+                    const name = decodeURIComponent(path.slice(6));
+                    if (Object.prototype.hasOwnProperty.call(saves, name)) {
+                        return Promise.resolve({ok: true, status: 200, text: async () => saves[name]});
+                    }
+                    return Promise.resolve({ok: false, status: 404});
+                }
+                return Promise.resolve({ok: true, status: 200});
+            }
+            return Promise.resolve({ok: true, status: 200});
         },
         // Codec is intentionally stubbed: tests exercise storage contracts/ordering,
         // not LZString/pako's compression implementation.
@@ -50,7 +67,10 @@ function environment({saves = {}, namespace = 'game-a', gameTitle = '', journal 
     ctx.window = ctx;
     vm.createContext(ctx);
     vm.runInContext(runtime, ctx);
-    return {ctx, logs, requests, journal, events, poll() { for (const timer of [...timers.values()]) if (timer.delay === 100) timer.fn(); }, timeout() { for (const timer of [...timers.values()]) if (timer.delay === 15000) timer.fn(); }};
+    return {ctx, logs, requests, journal, events,
+        // 后台预热是幂等的；需要读磁盘存档的测试先 await env.ready。
+        ready: ctx.__emuPrefetchSaves(),
+        poll() { for (const timer of [...timers.values()]) if (timer.delay === 100) timer.fn(); }, timeout() { for (const timer of [...timers.values()]) if (timer.delay === 15000) timer.fn(); }};
 }
 function mv(env) {
     env.ctx.StorageManager = {load() {}, save() {}, localFilePath() {}};
@@ -210,6 +230,7 @@ test('returning to library pauses and resumes the same scene without reviving a 
 test('Drill title globals read directory snapshot and persist through MV journal', async () => {
     const env = environment({saves: {'drill_global.rpgsave': '{"TTG":{"global_visibleTank":[false,true]}}'}});
     const sm = mv(env);
+    await env.ready;
     sm.drill_COGS_loadFromWebStorage = () => 'shared browser data';
     sm.drill_COGS_saveToWebStorage = () => { throw new Error('must not use shared keys'); };
     env.ctx.__emuInstallRuntime();
@@ -316,15 +337,18 @@ test('virtual keyboard maps all letter, digit, function and default controller k
     }
 });
 
-test('MV config/global/file are available on the first read, without a fetch race', () => {
+test('MV config/global/file are readable after warmup, and reads never refetch', async () => {
     const env = environment({saves: {'config.rpgsave': '{"alwaysDash":true}', 'global.rpgsave': '[null,{"title":"test"}]', 'file1.rpgsave': 'zip:{"system":{}}'}});
     const sm = mv(env);
+    await env.ready;
+    const warmed = env.requests.length;
+    assert.ok(warmed > 0, 'warmup should have fetched the saves');
     assert.equal(JSON.parse(sm.load(-1)).alwaysDash, true);
     assert.equal(JSON.parse(sm.load(0))[1].title, 'test');
     assert.equal(sm.exists(1), true);
     assert.equal(sm.load(2), null);
     assert.equal(sm.load(1), '{"system":{}}');
-    assert.equal(env.requests.length, 0);
+    assert.equal(env.requests.length, warmed, 'reads must be served from cache');
 });
 test('MV writes synchronously journal data, and serializes writes to the same file', async () => {
     const complete = [];
@@ -370,9 +394,10 @@ test('MV deletion tombstone wins over stale disk snapshot', async () => {
     assert.equal(mv(reopened).exists(1), false);
     await tick();
 });
-test('MV quota errors cannot report a successful save or alter the cached file', () => {
+test('MV quota errors cannot report a successful save or alter the cached file', async () => {
     const env = environment({saves: {'file1.rpgsave': '{"old":true}'}});
     const sm = mv(env);
+    await env.ready;
     env.ctx.localStorage.setItem = () => { throw new Error('QuotaExceededError'); };
     assert.throws(() => sm.save(1, '{"new":true}'), /QuotaExceededError/);
     assert.equal(sm.load(1), '{"old":true}');
@@ -380,6 +405,7 @@ test('MV quota errors cannot report a successful save or alter the cached file',
 test('MV backup/restore preserves compressed bytes and removes backup', async () => {
     const env = environment({saves: {'file1.rpgsave': 'zip:{"old":true}'}});
     const sm = mv(env);
+    await env.ready;
     sm.backup(1);
     sm.save(1, '{"new":true}');
     assert.equal(sm.backupExists(1), true);
@@ -388,8 +414,10 @@ test('MV backup/restore preserves compressed bytes and removes backup', async ()
     assert.equal(sm.backupExists(1), false);
     await tick();
 });
-test('corrupt MV saves fail with the filename rather than returning compressed garbage', () => {
-    const sm = mv(environment({saves: {'config.rpgsave': 'broken', 'file1.rpgsave': '{bad json'}}));
+test('corrupt MV saves fail with the filename rather than returning compressed garbage', async () => {
+    const env = environment({saves: {'config.rpgsave': 'broken', 'file1.rpgsave': '{bad json'}});
+    await env.ready;
+    const sm = mv(env);
     assert.throws(() => sm.load(-1), /config.rpgsave/);
     assert.throws(() => sm.load(1), /file1.rpgsave/);
 });
@@ -406,8 +434,12 @@ test('MZ keeps boolean exists, Promise load/save, and original object codecs', a
     assert.equal(sm.exists('file1'), false);
 });
 test('MZ disk failure rejects save and leaves previous data intact', async () => {
-    const env = environment({saves: {'file1.rmmzsave': '{"old":true}'}, fetch: async () => ({ok: false, status: 500})});
+    const env = environment({saves: {'file1.rmmzsave': '{"old":true}'},
+        fetch: async (url, options) => options?.method === 'PUT'
+            ? {ok: false, status: 500}
+            : {ok: true, status: 200, text: async () => '{"old":true}'}});
     const sm = mz(env);
+    await env.ready;
     await assert.rejects(sm.saveZip('file1', 'new'), /HTTP 500/);
     assert.equal(await sm.loadZip('file1'), '{"old":true}');
 });
@@ -434,6 +466,7 @@ test('MV migrates only matching legacy saves without replacing disk data or resu
     env.ctx.DataManager = {_globalId: 'RPGMV'};
     env.ctx.StorageManager = {load() {}, save() {}, localFilePath() {}, webStorageKey: id => id === 0 ? 'RPG Global' : 'RPG File' + id};
     env.ctx.__emuInstallRuntime();
+    await env.ready;
     assert.equal(env.ctx.StorageManager.load(1), '{"legacy":true}');
     assert.equal(env.ctx.StorageManager.exists(2), false);
     await tick();
@@ -454,6 +487,7 @@ test('MV migration preserves an existing disk file while recovering its missing 
     env.ctx.DataManager = {_globalId: 'RPGMV'};
     env.ctx.StorageManager = {load() {}, save() {}, localFilePath() {}, webStorageKey: id => id === 0 ? 'RPG Global' : 'RPG File' + id};
     env.ctx.__emuInstallRuntime();
+    await env.ready;
     assert.equal(env.ctx.StorageManager.load(1), '{"disk":true}');
     assert.equal(JSON.parse(env.ctx.StorageManager.load(0))[1].title, 'this game');
     await tick();
@@ -520,22 +554,25 @@ function titleEnvironment(saves) {
     mv(env);
     return env;
 }
-test('MV missing global index enables Continue only for complete game saves, without disk writes', () => {
+test('MV missing global index enables Continue only for complete game saves, without disk writes', async () => {
     const save = completeMVSave();
     const env = titleEnvironment({'file1.rpgsave': save, 'file2.rpgsave': '{"system":{}}', 'file3.rpgsave': 'broken'});
+    await env.ready;
+    const warmed = env.requests.length;
     assert.equal(env.ctx.DataManager.isAnySavefileExists(), true);
     assert.equal(env.ctx.DataManager.isThisGameFile(1), true);
     assert.equal(env.ctx.DataManager.isThisGameFile(2), false);
     assert.equal(env.ctx.DataManager.isThisGameFile(3), false);
     assert.equal(env.ctx.StorageManager.load(1), save);
     assert.equal(env.ctx.StorageManager.load(0), null);
-    assert.equal(env.requests.length, 0);
+    assert.equal(env.requests.length, warmed, 'title-screen reads must be served from cache');
     assert.equal(env.journal.size, 0);
     assert.match(env.logs.find(log => log.message.includes('file3')).message, /解压失败/);
 });
-test('MV directory-scoped old title index is repaired as a view and refreshed after deletion', () => {
+test('MV directory-scoped old title index is repaired as a view and refreshed after deletion', async () => {
     const global = '[null,{"title":"Old title","globalId":"old","playtime":"12:34","custom":42}]';
     const env = titleEnvironment({'file1.rpgsave': completeMVSave(), 'global.rpgsave': global});
+    await env.ready;
     assert.equal(env.ctx.DataManager.isAnySavefileExists(), true);
     const info = env.ctx.DataManager.loadGlobalInfo()[1];
     assert.equal(info.playtime, '12:34');
@@ -568,7 +605,7 @@ test('Continue rejection and synchronous/asynchronous load failures produce erro
 // Optional integration against an unmodified MV corescript checkout. The small
 // contract tests above remain fully offline and run on every build.
 test('official MV managers read PC saves/config and preserve save availability',
-    {skip: !process.env.EMU_MV_SOURCE_DIR}, () => {
+    {skip: !process.env.EMU_MV_SOURCE_DIR}, async () => {
         const source = process.env.EMU_MV_SOURCE_DIR;
         const env = environment();
         for (const name of ['lz-string', 'StorageManager', 'DataManager', 'ConfigManager']) {
@@ -592,6 +629,7 @@ test('official MV managers read PC saves/config and preserve save availability',
         next.ctx.$dataSystem = {gameTitle: '测试游戏'};
         vm.runInContext('Number.prototype.clamp = function(min, max) { return Math.min(max, Math.max(min, this)); };', next.ctx);
         next.ctx.__emuInstallRuntime();
+        await next.ready;
         next.ctx.ConfigManager.load();
         assert.equal(next.ctx.ConfigManager.alwaysDash, true);
         assert.equal(next.ctx.DataManager.isAnySavefileExists(), true);
@@ -600,7 +638,7 @@ test('official MV managers read PC saves/config and preserve save availability',
     });
 
 test('official MV reproduces disabled Continue and loads repaired orphan/renamed-title saves',
-    {skip: !process.env.EMU_MV_SOURCE_DIR}, () => {
+    {skip: !process.env.EMU_MV_SOURCE_DIR}, async () => {
         for (const global of [null, '[null,{"title":"Old title","globalId":"RPGMV"}]']) {
             const env = environment({saves: {'file1.rpgsave': completeMVSave(),
                 ...(global ? {'global.rpgsave': global} : {})}});
@@ -614,6 +652,8 @@ test('official MV reproduces disabled Continue and loads repaired orphan/renamed
             env.ctx.StorageManager.exists = id => id === 1;
             assert.equal(env.ctx.DataManager.isAnySavefileExists(), false);
             env.ctx.__emuInstallRuntime();
+            await env.ready;
+            const warmed = env.requests.length;
             assert.equal(env.ctx.DataManager.isAnySavefileExists(), true);
             // This test exercises MV's real load/extract flow; object construction
             // and JsonEx class revival belong to device/game-specific checks.
@@ -623,6 +663,6 @@ test('official MV reproduces disabled Continue and loads repaired orphan/renamed
             assert.equal(env.ctx.$gameSystem.marker, 'original progress');
             assert.equal(env.ctx.$gamePlayer.marker, 'original progress');
             assert.equal(env.ctx.Utils.isNwjs(), false);
-            assert.equal(env.requests.length, 0);
+            assert.equal(env.requests.length, warmed, 'reads must be served from cache');
         }
     });

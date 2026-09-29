@@ -27,6 +27,10 @@ struct GameWebView: UIViewRepresentable {
     
     func makeUIView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
+        // 内存优化：本地游戏不需要持久化 WebKit 数据（HTTP 缓存/localStorage 落盘），
+        // 使用非持久化存储可降低 WebKit 进程的内存占用。注意：localStorage 变为
+        // 会话级，待写回日志仅在本次会话内有效（写盘失败仍会在会话内重试）。
+        configuration.websiteDataStore = .nonPersistent()
         configuration.allowsInlineMediaPlayback = true
         configuration.mediaTypesRequiringUserActionForPlayback = []
         
@@ -96,6 +100,9 @@ struct GameWebView: UIViewRepresentable {
                         };
                         if (isOggBuffer(buffer) && window.stbvorbis && window.stbvorbis.decode) {
                             try {
+                                // 保留 slice 副本：worker 用 transfer 发走入参并 detach，
+                                // 传原始 buffer 会导致调用方手里的 buffer 被剥离（曾因此出过损坏/静音问题）。
+                                // 副本只是解码瞬间的 2x 峰值、transfer 后即释放，非 jetsam 主因，不省这笔。
                                 const copy = buffer.slice(0);
                                 Promise.resolve(window.stbvorbis.decode(copy)).then(result => {
                                     if (settled) return;
@@ -270,7 +277,10 @@ struct GameWebView: UIViewRepresentable {
                     }
                     do {
                         let data = try result.get()
-                        let bootstrap = "window.__emuBootstrap = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob('\(data.base64EncodedString())'), c => c.charCodeAt(0))));\n"
+                        // 元信息很小，直接以 JSON 注入；不再走 base64+atob，避免大字符串
+                        // 在 web 进程内的瞬时内存峰值。顺手转义 </ 防止脚本截断。
+                        let json = String(decoding: data, as: UTF8.self).replacingOccurrences(of: "</", with: "<\\/")
+                        let bootstrap = "window.__emuBootstrap = \(json);\n"
                         let controller = webView.configuration.userContentController
                         controller.removeAllUserScripts()
                         // Logging/runtime first, so failures in later compatibility scripts are captured.
@@ -304,11 +314,26 @@ struct GameWebView: UIViewRepresentable {
             webView.evaluateJavaScript("window.__emuSetPaused?.(\(paused ? "true" : "false"))", completionHandler: nil)
         }
         
+        private var terminateCount = 0
+        private var lastTerminateAt = Date.distantPast
+
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
             hideWorkItem?.cancel()
             GameLogManager.shared.isVisible = true
             GameLogManager.shared.isGameReady = false
-            GameLogManager.shared.log("WebKit 游戏进程已终止，请重新打开游戏", level: .error)
+            // 有界自动恢复：60 秒窗口内最多自动重载 3 次（每次重载都会重新走
+            // 导航注入，存档以磁盘为准；空中未落盘的写入可能丢失，属小概率窗口）。
+            // 超过阈值则停手，避免在持续 OOM 的机器上无限转圈。
+            let now = Date()
+            if now.timeIntervalSince(lastTerminateAt) > 60 { terminateCount = 0 }
+            lastTerminateAt = now
+            terminateCount += 1
+            if terminateCount <= 3 {
+                GameLogManager.shared.log("WebKit 进程被系统回收，正在自动恢复（第 \(terminateCount) 次）…", level: .warning)
+                webView.reload()
+            } else {
+                GameLogManager.shared.log("WebKit 游戏进程已终止，请重新打开游戏", level: .error)
+            }
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {

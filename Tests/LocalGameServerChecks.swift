@@ -60,7 +60,11 @@ struct LocalGameServerChecks {
 
         let initial = try await bootstrap()
         let session = initial["session"] as! String
-        try require((initial["saves"] as! [String: String])["config.rpgsave"] == "{}", "Snapshot normalizes filename case")
+        try require(initial["saves"] == nil, "Bootstrap must not embed full save contents (memory)")
+        let initialMeta = initial["savesMeta"] as! [String: [String: Any]]
+        try require((initialMeta["config.rpgsave"]?["size"] as? Int) == 2, "Snapshot normalizes filename case")
+        let (initialRead, _) = try await request("/save/config.rpgsave")
+        try require(String(decoding: initialRead, as: UTF8.self) == "{}", "On-demand save fetch serves content")
         let (script, _) = try await request("/js/rpg_managers.js")
         try require(String(decoding: script, as: UTF8.self).contains("window.__emuInstallRuntime"), "Manager hook must execute before main.js")
         try Data("// global save plugin".utf8).write(to: root.appendingPathComponent("js/Drill_CoreOfGlobalSave.js"))
@@ -121,7 +125,10 @@ struct LocalGameServerChecks {
         try await waitForServer(server)
         let imported = try await bootstrap()
         let privateSession = imported["session"] as! String
-        try require((imported["saves"] as! [String: String])["file2.rpgsave"] == "original", "Import original saves")
+        let importedMeta = imported["savesMeta"] as! [String: [String: Any]]
+        try require((importedMeta["file2.rpgsave"]?["size"] as? Int) == 8, "Import original saves")
+        let (importedRead, _) = try await request("/save/file2.rpgsave")
+        try require(String(decoding: importedRead, as: UTF8.self) == "original", "On-demand fetch reads from private save directory")
         let (_, privateWrite) = try await request("/save/file2.rpgsave", method: "PUT", body: "new progress", session: privateSession)
         try require(privateWrite.statusCode == 200, "Write independent save")
         let original = try String(contentsOf: root.appendingPathComponent("save/file2.rpgsave"), encoding: .utf8)
@@ -131,13 +138,15 @@ struct LocalGameServerChecks {
         try server.start(serving: root, saveDirectory: privateSaves)
         try await waitForServer(server)
         let reopened = try await bootstrap()
-        try require((reopened["saves"] as! [String: String])["file2.rpgsave"] == "new progress", "Reopen retains progress")
+        let reopenedMeta = reopened["savesMeta"] as! [String: [String: Any]]
+        try require((reopenedMeta["file2.rpgsave"]?["size"] as? Int) == 12, "Reopen retains progress")
         let (_, privateDelete) = try await request("/save/file2.rpgsave", method: "DELETE", session: reopened["session"] as? String)
         try require(privateDelete.statusCode == 200, "Delete private save")
         try server.start(serving: root, saveDirectory: privateSaves)
         try await waitForServer(server)
         let afterDelete = try await bootstrap()
-        try require((afterDelete["saves"] as! [String: String])["file2.rpgsave"] == nil, "Do not resurrect deleted imports")
+        let afterDeleteMeta = afterDelete["savesMeta"] as! [String: [String: Any]]
+        try require(afterDeleteMeta["file2.rpgsave"] == nil, "Do not resurrect deleted imports")
         print("PASS: LocalGameServer integration checks")
     }
 }
