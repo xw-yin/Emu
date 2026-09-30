@@ -1,5 +1,4 @@
 import Foundation
-import UIKit
 import Combine
 
 /// 游戏库管理器：统一调度沙盒内置游戏与外部“下载”目录零拷贝直读游戏
@@ -11,9 +10,16 @@ final class GameLibraryManager: ObservableObject {
     private let gamesDirectoryName = "Games"
     private let externalGamesKey = "com.emu.external_games_v1"
     private let ignoredSandboxGamesKey = "com.emu.ignored_sandbox_games_v1"
+    private let scanQueue = DispatchQueue(label: "com.emu.library.scan", qos: .userInitiated)
+    private let refreshLock = NSLock()
+    private var refreshGeneration = 0
+    private let sandboxIDsKey = "com.emu.sandbox_game_ids_v1"
+    private let directoryOverride: URL?
+    private let defaults: UserDefaults
     private var activeSecurityScopedURL: URL?
     
     private var gamesDirectoryURL: URL {
+        if let directoryOverride { return directoryOverride }
         let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let dir = documentsURL.appendingPathComponent(gamesDirectoryName, isDirectory: true)
         if !FileManager.default.fileExists(atPath: dir.path) {
@@ -22,25 +28,36 @@ final class GameLibraryManager: ObservableObject {
         return dir
     }
     
-    private init() {
+    init(directoryURL: URL? = nil, defaults: UserDefaults = .standard) {
+        directoryOverride = directoryURL
+        self.defaults = defaults
         loadGames()
     }
     
     /// 加载并刷新全部游戏（沙盒内部 + 外部下载目录）
     func loadGames() {
-        var allGames: [Game] = []
-        
-        // 1. 扫描沙盒 Documents/Games 目录
-        allGames.append(contentsOf: scanSandboxGames())
-        
-        // 2. 加载外部零拷贝目录书签
-        allGames.append(contentsOf: loadExternalBookmarkGames())
-        
-        DispatchQueue.main.async {
-            self.games = allGames
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { self.loadGames() }
+            return
+        }
+        refreshLock.lock()
+        refreshGeneration += 1
+        let generation = refreshGeneration
+        refreshLock.unlock()
+        // Snapshot mutable preferences before background work. A newer refresh
+        // invalidates older scans, including scans preceding remove/import.
+        let ignored = ignoredSandboxGameNames()
+        let external = loadExternalBookmarkGames()
+        scanQueue.async {
+            guard self.isCurrentRefresh(generation) else { return }
+            let allGames = self.scanSandboxGames(ignored: ignored, generation: generation) + self.refreshExternalCovers(external)
+            DispatchQueue.main.async {
+                guard self.isCurrentRefresh(generation) else { return }
+                if self.games != allGames { self.games = allGames }
+            }
         }
     }
-    
+
     /// 核心功能：直接关联外部文件夹（如“我的iPhone/下载/某个游戏”），零拷贝原地直读
     func linkExternalDirectory(at url: URL) -> Bool {
         guard url.startAccessingSecurityScopedResource() else {
@@ -72,6 +89,7 @@ final class GameLibraryManager: ObservableObject {
             rootDirectoryName: url.lastPathComponent,
             engineType: engine,
             coverImageRelativePath: coverPath,
+            coverImageModifiedAt: coverModificationDate(coverPath),
             isExternalStorage: true,
             securityBookmarkData: bookmark
         )
@@ -130,15 +148,23 @@ final class GameLibraryManager: ObservableObject {
     }
     
     // MARK: - 私有辅助
-    private func scanSandboxGames() -> [Game] {
+    private func isCurrentRefresh(_ generation: Int) -> Bool {
+        refreshLock.lock()
+        defer { refreshLock.unlock() }
+        return refreshGeneration == generation
+    }
+
+    private func scanSandboxGames(ignored: Set<String>, generation: Int) -> [Game] {
         var scanned: [Game] = []
         let fileManager = FileManager.default
-        let ignored = ignoredSandboxGameNames()
+        var savedIDs = defaults.dictionary(forKey: sandboxIDsKey) as? [String: String] ?? [:]
+        let oldIDs = savedIDs
         guard let contents = try? fileManager.contentsOfDirectory(at: gamesDirectoryURL, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) else {
             return []
         }
         
-        for folder in contents {
+        for folder in contents.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+            guard isCurrentRefresh(generation) else { return [] }
             var isDir: ObjCBool = false
             if fileManager.fileExists(atPath: folder.path, isDirectory: &isDir), isDir.boolValue {
                 if ignored.contains(folder.lastPathComponent) { continue }
@@ -146,25 +172,47 @@ final class GameLibraryManager: ObservableObject {
                     let engine = detectEngine(at: gameRoot)
                     let title = extractGameTitle(from: gameRoot) ?? folder.lastPathComponent
                     let cover = findCoverImage(at: gameRoot)
+                    let name = folder.lastPathComponent
+                    let id = savedIDs[name].flatMap(UUID.init(uuidString:)) ?? UUID()
+                    savedIDs[name] = id.uuidString
+                    let added = (try? folder.resourceValues(forKeys: [.creationDateKey]))?.creationDate ?? .distantPast
                     scanned.append(Game(
+                        id: id,
                         title: title,
                         rootDirectoryName: folder.lastPathComponent,
                         engineType: engine,
+                        dateAdded: added,
                         coverImageRelativePath: cover,
+                        coverImageModifiedAt: coverModificationDate(cover),
                         isExternalStorage: false
                     ))
                 }
             }
         }
+        if savedIDs != oldIDs { defaults.set(savedIDs, forKey: sandboxIDsKey) }
         return scanned
     }
     
+    private func refreshExternalCovers(_ games: [Game]) -> [Game] {
+        games.map { game in
+            guard let bookmark = game.securityBookmarkData else { return game }
+            var stale = false
+            guard let url = try? URL(resolvingBookmarkData: bookmark, options: [], relativeTo: nil,
+                                     bookmarkDataIsStale: &stale),
+                  url.startAccessingSecurityScopedResource() else { return game }
+            defer { url.stopAccessingSecurityScopedResource() }
+            var updated = game
+            updated.coverImageModifiedAt = coverModificationDate(game.coverImageRelativePath)
+            return updated
+        }
+    }
+
     private func loadExternalBookmarkGames() -> [Game] {
         return loadSavedExternalGames()
     }
     
     private func loadSavedExternalGames() -> [Game] {
-        guard let data = UserDefaults.standard.data(forKey: externalGamesKey),
+        guard let data = defaults.data(forKey: externalGamesKey),
               let list = try? JSONDecoder().decode([Game].self, from: data) else {
             return []
         }
@@ -173,7 +221,7 @@ final class GameLibraryManager: ObservableObject {
     
     private func saveExternalGames(_ list: [Game]) {
         if let data = try? JSONEncoder().encode(list) {
-            UserDefaults.standard.set(data, forKey: externalGamesKey)
+            defaults.set(data, forKey: externalGamesKey)
         }
     }
     
@@ -187,13 +235,13 @@ final class GameLibraryManager: ObservableObject {
         } else {
             var ignored = ignoredSandboxGameNames()
             ignored.insert(game.rootDirectoryName)
-            UserDefaults.standard.set(Array(ignored), forKey: ignoredSandboxGamesKey)
+            defaults.set(Array(ignored), forKey: ignoredSandboxGamesKey)
         }
         loadGames()
     }
     
     private func ignoredSandboxGameNames() -> Set<String> {
-        Set(UserDefaults.standard.stringArray(forKey: ignoredSandboxGamesKey) ?? [])
+        Set(defaults.stringArray(forKey: ignoredSandboxGamesKey) ?? [])
     }
     
     private func findGameRoot(within folder: URL) -> URL? {
@@ -242,6 +290,11 @@ final class GameLibraryManager: ObservableObject {
         return nil
     }
     
+    private func coverModificationDate(_ path: String?) -> Date? {
+        guard let path else { return nil }
+        return (try? URL(fileURLWithPath: path).resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+    }
+
     private func findCoverImage(at rootURL: URL) -> String? {
         let candidates = ["icon/icon.png", "img/system/IconSet.png", "cover.jpg", "cover.png"]
         for c in candidates {

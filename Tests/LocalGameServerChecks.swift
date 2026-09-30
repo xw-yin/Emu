@@ -25,6 +25,13 @@ struct LocalGameServerChecks {
     }
 
     @MainActor
+    static func start(_ server: LocalGameServer, root: URL, saves: URL? = nil) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            server.start(serving: root, saveDirectory: saves) { continuation.resume(with: $0) }
+        }
+    }
+
+    @MainActor
     static func main() async throws {
         let fm = FileManager.default
         let root = fm.temporaryDirectory.appendingPathComponent("emu-server-check-" + UUID().uuidString)
@@ -37,7 +44,19 @@ struct LocalGameServerChecks {
         try Data("{}".utf8).write(to: root.appendingPathComponent("save/Config.rpgsave"))
         let server = LocalGameServer.shared
         defer { server.stop() }
-        try server.start(serving: root)
+        // A cancelled preparation must never publish a listener or stale error.
+        let cancelled: Result<Void, Error> = await withCheckedContinuation { continuation in
+            var returned = false
+            server.start(serving: root) { result in
+                precondition(returned, "Preparation must not complete inline on the UI thread")
+                continuation.resume(returning: result)
+            }
+            returned = true
+            server.stop()
+        }
+        if case .success = cancelled { throw URLError(.unknown) }
+        try require(!server.isRunning && server.lastError == nil, "Cancelled startup cannot revive server")
+        try await start(server, root: root)
         try await waitForServer(server)
 
         func bootstrap() async throws -> [String: Any] {
@@ -47,13 +66,15 @@ struct LocalGameServerChecks {
             return try JSONSerialization.jsonObject(with: data) as! [String: Any]
         }
         func request(_ path: String, method: String = "GET", body: String? = nil,
-                     session: String? = nil, range: String? = nil) async throws -> (Data, HTTPURLResponse) {
+                     session: String? = nil, range: String? = nil, extraHeaders: [String: String] = [:]) async throws -> (Data, HTTPURLResponse) {
             var request = URLRequest(url: URL(string: "http://127.0.0.1:\(server.port)" + path)!)
+            request.cachePolicy = .reloadIgnoringLocalCacheData
             request.httpMethod = method
             request.httpBody = body.map { Data($0.utf8) }
             request.timeoutInterval = 5
             request.setValue(session, forHTTPHeaderField: "X-Emu-Session")
             request.setValue(range, forHTTPHeaderField: "Range")
+            for (key, value) in extraHeaders { request.setValue(value, forHTTPHeaderField: key) }
             let (data, response) = try await URLSession.shared.data(for: request)
             return (data, response as! HTTPURLResponse)
         }
@@ -63,8 +84,10 @@ struct LocalGameServerChecks {
         try require(initial["saves"] == nil, "Bootstrap must not embed full save contents (memory)")
         let initialMeta = initial["savesMeta"] as! [String: [String: Any]]
         try require((initialMeta["config.rpgsave"]?["size"] as? Int) == 2, "Snapshot normalizes filename case")
-        let (initialRead, _) = try await request("/save/config.rpgsave")
+        let (initialRead, saveResponse) = try await request("/save/config.rpgsave")
         try require(String(decoding: initialRead, as: UTF8.self) == "{}", "On-demand save fetch serves content")
+        try require(saveResponse.value(forHTTPHeaderField: "Cache-Control") == "no-store", "Saves never cache")
+        try require(saveResponse.value(forHTTPHeaderField: "ETag") == nil, "Saves have no cache validator")
         let (script, _) = try await request("/js/rpg_managers.js")
         try require(String(decoding: script, as: UTF8.self).contains("window.__emuInstallRuntime"), "Manager hook must execute before main.js")
         try Data("// global save plugin".utf8).write(to: root.appendingPathComponent("js/Drill_CoreOfGlobalSave.js"))
@@ -101,6 +124,29 @@ struct LocalGameServerChecks {
         try require(invalidRange.statusCode == 416, "Malformed range must not crash")
         let (empty, head) = try await request("/audio.ogg", method: "HEAD")
         try require(empty.isEmpty && head.value(forHTTPHeaderField: "Content-Length") == "6", "HEAD framing")
+        // Cross multiple 64 KiB sends; ranges must seek rather than start at byte zero.
+        let large = Data((0..<(256 * 1024 + 37)).map { UInt8($0 % 251) })
+        try large.write(to: root.appendingPathComponent("large.bin"))
+        let (full, fullResponse) = try await request("/large.bin")
+        try require(full == large && fullResponse.statusCode == 200, "Chunked full response is byte-exact")
+        let etag = fullResponse.value(forHTTPHeaderField: "ETag")!
+        try require(fullResponse.value(forHTTPHeaderField: "Cache-Control") == "private, no-cache", "Static assets revalidate")
+        let (unchangedBody, unchanged) = try await request("/large.bin", extraHeaders: ["If-None-Match": etag])
+        try require(unchanged.statusCode == 304 && unchangedBody.isEmpty, "Unchanged assets return no body")
+        let (ranged, rangedResponse) = try await request("/large.bin", range: "bytes=65530-196620")
+        try require(ranged == large.subdata(in: 65530..<196621) && rangedResponse.statusCode == 206, "Range crosses send boundaries")
+        let (openEnded, _) = try await request("/large.bin", range: "bytes=262140-")
+        try require(openEnded == large.subdata(in: 262140..<large.count), "Open-ended range")
+        let (headRangeBody, headRange) = try await request("/large.bin", method: "HEAD", range: "bytes=1-8")
+        try require(headRangeBody.isEmpty && headRange.statusCode == 206 && headRange.value(forHTTPHeaderField: "Content-Length") == "8", "HEAD range metadata")
+        let (ifRangeBody, ifRange) = try await request("/large.bin", range: "bytes=0-1", extraHeaders: ["If-Range": etag])
+        try require(ifRange.statusCode == 200 && ifRangeBody == large, "Weak validators cannot authorize If-Range")
+        try Data("changed".utf8).write(to: root.appendingPathComponent("large.bin"), options: .atomic)
+        let (changedBody, changedResponse) = try await request("/large.bin", extraHeaders: ["If-None-Match": etag])
+        try require(changedResponse.statusCode == 200 && changedBody == Data("changed".utf8), "Changed asset invalidates validator")
+        try Data().write(to: root.appendingPathComponent("empty.bin"))
+        let (emptyBody, emptyResponse) = try await request("/empty.bin")
+        try require(emptyResponse.statusCode == 200 && emptyBody.isEmpty, "Empty files complete without hanging")
         let (_, unauthorized) = try await request("/save/file1.rpgsave", method: "PUT", body: "{}")
         try require(unauthorized.statusCode == 409, "Reject writes without a game session")
         let (_, written) = try await request("/save/file1.rpgsave", method: "PUT", body: "{\"name\":\"存档\"}", session: session)
@@ -115,13 +161,15 @@ struct LocalGameServerChecks {
         try fm.removeItem(at: root.appendingPathComponent("save/escape.rpgsave"))
         let (_, removed) = try await request("/save/file1.rpgsave", method: "DELETE", session: session)
         try require(removed.statusCode == 200 && !fm.fileExists(atPath: root.appendingPathComponent("save/file1.rpgsave").path), "Delete save")
-        try server.start(serving: root)
+        try await start(server, root: root)
         try await waitForServer(server)
+        let (_, newSessionAsset) = try await request("/large.bin", extraHeaders: ["If-None-Match": changedResponse.value(forHTTPHeaderField: "ETag")!])
+        try require(newSessionAsset.statusCode == 200, "Restart invalidates previous game resource cache")
         let (_, stale) = try await request("/save/file1.rpgsave", method: "PUT", body: "{}", session: session)
         try require(stale.statusCode == 409, "Old game session cannot write after restart")
         let privateSaves = root.appendingPathComponent("app-saves")
         try Data("original".utf8).write(to: root.appendingPathComponent("save/file2.rpgsave"))
-        try server.start(serving: root, saveDirectory: privateSaves)
+        try await start(server, root: root, saves: privateSaves)
         try await waitForServer(server)
         let imported = try await bootstrap()
         let privateSession = imported["session"] as! String
@@ -135,14 +183,14 @@ struct LocalGameServerChecks {
         try require(original == "original", "Never alter external originals")
         let (privateRead, _) = try await request("/save/file2.rpgsave")
         try require(String(decoding: privateRead, as: UTF8.self) == "new progress", "HTTP reads agree with private snapshot")
-        try server.start(serving: root, saveDirectory: privateSaves)
+        try await start(server, root: root, saves: privateSaves)
         try await waitForServer(server)
         let reopened = try await bootstrap()
         let reopenedMeta = reopened["savesMeta"] as! [String: [String: Any]]
         try require((reopenedMeta["file2.rpgsave"]?["size"] as? Int) == 12, "Reopen retains progress")
         let (_, privateDelete) = try await request("/save/file2.rpgsave", method: "DELETE", session: reopened["session"] as? String)
         try require(privateDelete.statusCode == 200, "Delete private save")
-        try server.start(serving: root, saveDirectory: privateSaves)
+        try await start(server, root: root, saves: privateSaves)
         try await waitForServer(server)
         let afterDelete = try await bootstrap()
         let afterDeleteMeta = afterDelete["savesMeta"] as! [String: [String: Any]]

@@ -68,6 +68,11 @@ jobs:
           swiftc -parse-as-library Services/GameLogManager.swift Tests/GameLogChecks.swift -o "$RUNNER_TEMP/emu-log-checks"
           "$RUNNER_TEMP/emu-log-checks"
 
+      - name: Check library refresh and identity
+        run: |
+          swiftc -parse-as-library Models/Game.swift Services/GameLibraryManager.swift Tests/GameLibraryChecks.swift -o "$RUNNER_TEMP/emu-library-checks"
+          "$RUNNER_TEMP/emu-library-checks"
+
       - name: Determine Version & Build Number
         id: versioning
         run: |

@@ -25,6 +25,7 @@ struct Game: Identifiable, Codable, Hashable {
     var dateAdded: Date
     var lastPlayed: Date?
     var coverImageRelativePath: String?
+    var coverImageModifiedAt: Date?
     
     // 零拷贝直读外部目录专属字段
     var isExternalStorage: Bool = false
@@ -38,6 +39,7 @@ struct Game: Identifiable, Codable, Hashable {
         dateAdded: Date = Date(),
         lastPlayed: Date? = nil,
         coverImageRelativePath: String? = nil,
+        coverImageModifiedAt: Date? = nil,
         isExternalStorage: Bool = false,
         securityBookmarkData: Data? = nil
     ) {
@@ -48,6 +50,7 @@ struct Game: Identifiable, Codable, Hashable {
         self.dateAdded = dateAdded
         self.lastPlayed = lastPlayed
         self.coverImageRelativePath = coverImageRelativePath
+        self.coverImageModifiedAt = coverImageModifiedAt
         self.isExternalStorage = isExternalStorage
         self.securityBookmarkData = securityBookmarkData
     }

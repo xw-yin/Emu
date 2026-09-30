@@ -112,20 +112,21 @@ struct GamePlayerView: View {
             return
         }
         
-        do {
-            let saveDirectory: URL? = game.isExternalStorage
-                ? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-                    .appendingPathComponent("GameSaves", isDirectory: true)
-                    .appendingPathComponent(game.id.uuidString, isDirectory: true)
-                : nil
-            try LocalGameServer.shared.start(serving: rootURL, saveDirectory: saveDirectory)
-        } catch {
-            let msg = "本地服务启动失败: \(error.localizedDescription)"
-            errorMessage = msg
-            GameLogManager.shared.log(msg, level: .error)
+        let saveDirectory: URL? = game.isExternalStorage
+            ? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("GameSaves", isDirectory: true)
+                .appendingPathComponent(game.id.uuidString, isDirectory: true)
+            : nil
+        LocalGameServer.shared.start(serving: rootURL, saveDirectory: saveDirectory) { result in
+            guard !didCleanup else { return }
+            if case .failure(let error) = result {
+                let msg = "本地服务启动失败: \(error.localizedDescription)"
+                errorMessage = msg
+                GameLogManager.shared.log(msg, level: .error)
+            }
         }
     }
-    
+
     private func updateIdleTimer() {
         UIApplication.shared.isIdleTimerDisabled = !didCleanup && isPresented && keepScreenAwake && UIApplication.shared.applicationState == .active
     }

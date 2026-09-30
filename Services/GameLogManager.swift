@@ -40,10 +40,16 @@ final class GameLogManager: ObservableObject {
         }
     }
     
-    @Published var logs: [LogItem] = [] { didSet { invalidateDerivedLogs() } }
+    private struct LogBatch {
+        var logs: [LogItem] = []
+        var loadedCount = 0
+        var errorCount = 0
+    }
+    @Published private var batch = LogBatch() { didSet { invalidateDerivedLogs() } }
+    var logs: [LogItem] { batch.logs }
+    var loadedCount: Int { batch.loadedCount }
+    var errorCount: Int { batch.errorCount }
     @Published var isVisible: Bool = true
-    @Published var loadedCount: Int = 0
-    @Published var errorCount: Int = 0
     @Published var isGameReady: Bool = false
     
     @Published var isCollapsed = false
@@ -57,7 +63,8 @@ final class GameLogManager: ObservableObject {
     private var cachedVisible: [LogItem]?
     private var cachedCounts: [LogItem.Level: Int] = [:]
     private var pendingLogs: [LogItem] = []
-    private var flushWork: DispatchWorkItem?
+    private let pendingLock = NSLock()
+    private var flushToken: UUID?
 
     private func invalidateDerivedLogs() {
         cachedRetained = nil
@@ -111,46 +118,56 @@ final class GameLogManager: ObservableObject {
     private init() {}
     
     func reset() {
-        flushWork?.cancel()
-        flushWork = nil
+        pendingLock.lock()
+        flushToken = nil
         pendingLogs.removeAll()
-        logs.removeAll()
+        pendingLock.unlock()
+        batch = LogBatch()
         startupLogs.removeAll()
         manuallyOpened = false
         selectedLevel = nil
         followsLatest = true
         isCollapsed = false
-        loadedCount = 0
-        errorCount = 0
         isGameReady = false
         isVisible = true
     }
     
     func log(_ message: String, level: LogItem.Level = .info) {
-        let now = Date()
-        DispatchQueue.main.async {
-            let item = LogItem(timestamp: now, level: level, message: message)
-            self.pendingLogs.append(item)
-            if level == .error { self.isVisible = true }
-            if self.flushWork == nil {
-                let work = DispatchWorkItem { [weak self] in self?.flushPendingLogs() }
-                self.flushWork = work
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: work)
+        let item = LogItem(timestamp: Date(), level: level, message: message)
+        pendingLock.lock()
+        pendingLogs.append(item)
+        let token: UUID?
+        if flushToken == nil {
+            token = UUID()
+            flushToken = token
+        } else { token = nil }
+        pendingLock.unlock()
+        // Producers share a buffer; only the first log schedules a main-thread hop.
+        if let token {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                self.flushPendingLogs(expectedToken: token)
             }
         }
     }
-    
-    private func flushPendingLogs() {
-        flushWork?.cancel()
-        flushWork = nil
-        guard !pendingLogs.isEmpty else { return }
-        let batch = pendingLogs
+
+    private func flushPendingLogs(expectedToken: UUID? = nil) {
+        pendingLock.lock()
+        if let expectedToken, flushToken != expectedToken {
+            pendingLock.unlock()
+            return
+        }
+        let pending = pendingLogs
         pendingLogs.removeAll(keepingCapacity: true)
-        loadedCount += batch.filter { $0.level == .success }.count
-        errorCount += batch.filter { $0.level == .error }.count
-        var next = logs + batch
+        flushToken = nil
+        pendingLock.unlock()
+        guard !pending.isEmpty else { return }
+        var next = batch.logs + pending
         if next.count > maxLogCount { next.removeFirst(next.count - maxLogCount) }
-        logs = next
+        // A single published value keeps log rows and counters in one UI update.
+        batch = LogBatch(logs: next,
+                         loadedCount: batch.loadedCount + pending.filter { $0.level == .success }.count,
+                         errorCount: batch.errorCount + pending.filter { $0.level == .error }.count)
+        if pending.contains(where: { $0.level == .error }), !isVisible { isVisible = true }
     }
 
     func formatTime(_ date: Date) -> String {

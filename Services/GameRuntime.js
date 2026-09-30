@@ -4,11 +4,13 @@
     'use strict';
     const bootstrap = window.__emuBootstrap;
     if (!bootstrap) throw new Error('Emu save snapshot is missing');
-    // 内存优化：bootstrap 只携带存档元信息（savesMeta: 文件名 -> {size}），正文按需
-    // 经 GET /save/<name> 拉取。cache 只保留实际访问过的存档，不再常驻全量巨型字符串，
-    // 也不再有 atob + 逐字符解码的瞬时内存峰值（这是之前进读档面板时 WebKit 被 jetsam 的主因）。
+    // Keep only metadata at startup. MV reads synchronously on demand; MZ uses fetch.
     const meta = bootstrap.savesMeta || Object.create(null);
     const cache = Object.create(null);
+    const cacheOrder = new Map();
+    const revisions = new Map();
+    const cacheLimit = 8 * 1024 * 1024; // Conservative UTF-16 string byte estimate.
+    let cacheBytes = 0;
     const prefix = 'emu.pending.' + bootstrap.namespace + '.';
     const pending = Object.create(null);
     const queues = new Map();
@@ -56,9 +58,46 @@
     }
     const has = name => Object.prototype.hasOwnProperty.call(cache, name);
     const hasFile = name => Object.prototype.hasOwnProperty.call(meta, name);
+    function forget(name) {
+        if (has(name)) cacheBytes -= cache[name].length * 2;
+        delete cache[name];
+        cacheOrder.delete(name);
+    }
+    function trimCache() {
+        for (const name of cacheOrder.keys()) {
+            if (cacheBytes <= cacheLimit) break;
+            if (!Object.prototype.hasOwnProperty.call(pending, name)) forget(name);
+        }
+    }
+    function remember(name, text) {
+        forget(name);
+        cache[name] = text;
+        cacheOrder.set(name, true);
+        cacheBytes += text.length * 2;
+        trimCache();
+    }
+    function cached(name) {
+        cacheOrder.delete(name);
+        cacheOrder.set(name, true);
+        return cache[name];
+    }
     function update(name, value) {
-        if (value === null) { delete cache[name]; delete meta[name]; }
-        else { cache[name] = value; meta[name] = { size: String(value).length }; }
+        revisions.set(name, (revisions.get(name) || 0) + 1);
+        if (value === null) { forget(name); delete meta[name]; }
+        else { meta[name] = {size: String(value).length}; remember(name, value); }
+    }
+    function readFileSync(name) {
+        if (has(name)) return cached(name);
+        if (!hasFile(name)) return null;
+        // MV and its plugins require a synchronous return value. The loopback
+        // server runs on a native background queue, independent of this JS thread.
+        const xhr = new XMLHttpRequest();
+        xhr.open('GET', '/save/' + encodeURIComponent(name), false);
+        xhr.send(null);
+        if (xhr.status !== 200) throw new Error('存档读取失败 HTTP ' + xhr.status + ': ' + name);
+        const text = xhr.responseText;
+        remember(name, text);
+        return text;
     }
     async function request(name, value) {
         const controller = new AbortController();
@@ -84,37 +123,22 @@
         next.then(cleanup, cleanup);
         return next;
     }
-    // 按需拉取单个存档正文（幂等；已有缓存或并发写入时不覆盖新值）
     async function prefetchOne(name) {
         const file = validName(name).toLowerCase();
-        if (has(file)) return cache[file];
+        if (has(file)) return cached(file);
         if (!hasFile(file)) throw new Error('存档不存在: ' + file);
+        const revision = revisions.get(file) || 0;
         const resp = await fetch('/save/' + encodeURIComponent(file));
         if (!resp.ok) throw new Error('存档读取失败 HTTP ' + resp.status + ': ' + file);
         const text = await resp.text();
-        // 双保险：fetch 在途时若被 write/remove 改过缓存或删了元信息，不覆盖/不复活。
-        if (!has(file) && hasFile(file)) cache[file] = text;
-        return cache[file];
+        if ((revisions.get(file) || 0) !== revision) {
+            if (!hasFile(file)) throw new Error('存档不存在: ' + file);
+            return prefetchOne(file);
+        }
+        remember(file, text);
+        return text;
     }
-    let prefetchAllPromise = null;
-    function prefetchAllSaves() {
-        if (prefetchAllPromise) return prefetchAllPromise;
-        prefetchAllPromise = (async () => {
-            const names = Object.keys(meta);
-            let ok = 0;
-            for (const name of names) {
-                try { await prefetchOne(name); ok++; }
-                catch (e) { log('warning', '存档预热跳过: ' + name + ': ' + describe(e)); }
-            }
-            log('info', '存档预热完成: ' + ok + '/' + names.length + '（逐个拉取，常驻峰值已消除）');
-        })();
-        return prefetchAllPromise;
-    }
-    // 启动即后台预热：逐个拉取、增量进缓存，保证插件/同步读档接口的兼容性，
-    // 同时避免一次性巨型字符串的瞬时峰值。
-    prefetchAllSaves();
-    // 供测试等待预热完成；生产环境直接使用后台预热。
-    window.__emuPrefetchSaves = prefetchAllSaves;
+    window.__emuSaveCacheStats = () => ({bytes: cacheBytes, limit: cacheLimit, files: cacheOrder.size});
     window.__emuFlushSaves = () => Promise.allSettled([...queues.values()]);
     function flush(name, value) {
         return enqueue(name, async () => {
@@ -123,6 +147,7 @@
             if (pending[name] === value) {
                 localStorage.removeItem(prefix + name);
                 delete pending[name];
+                trimCache();
             }
         }).catch(error => {
             log('error', '存档未写回磁盘（已保留本地副本）: ' + name + ': ' + describe(error));
@@ -164,7 +189,7 @@
         return 'plugin_' + key + '.rpgsave';
     }
     function readRaw(name) {
-        const raw = cache[name];
+        const raw = readFileSync(name);
         const trimmed = String(raw).trim();
         const json = /^[\[{]/.test(trimmed) ? trimmed : window.LZString.decompressFromBase64(raw);
         if (!json) throw new Error('存档解压失败: ' + name);
@@ -174,7 +199,7 @@
     }
     function readMV(id) {
         const name = mvName(id);
-        if (!has(name)) return null;
+        if (!hasFile(name)) return null;
         return readRaw(name);
     }
     function migrateMV(sm) {
@@ -188,13 +213,13 @@
             if (!raw) return;
             const legacy = JSON.parse(window.LZString.decompressFromBase64(raw));
             if (!Array.isArray(legacy)) return;
-            const info = has('global.rpgsave') ? JSON.parse(readMV(0)) : [];
+            const info = hasFile('global.rpgsave') ? JSON.parse(readMV(0)) : [];
             if (!Array.isArray(info)) throw new Error('global.rpgsave 必须是存档索引数组');
             let imported = false;
             for (let id = 1; id < legacy.length; id++) {
                 if (legacy[id]?.title !== bootstrap.gameTitle || legacy[id]?.globalId !== window.DataManager._globalId) continue;
                 const name = mvName(id);
-                if (!has(name)) {
+                if (!hasFile(name) && pending[name] !== null) {
                     const content = localStorage.getItem(sm.webStorageKey(id));
                     if (!content) continue;
                     JSON.parse(window.LZString.decompressFromBase64(content));
@@ -221,9 +246,7 @@
         const mz = typeof sm.loadZip === 'function' && typeof sm.saveZip === 'function';
         if (!mv && !mz) return; // Wait until the managers script has finished.
         if (mv) {
-            prefetchAllSaves().then(() => {
-                try { migrateMV(sm); } catch (e) { log('error', '旧浏览器存档恢复失败: ' + describe(e)); }
-            });
+            migrateMV(sm);
             sm.load = sm.loadFromLocalFile = readMV;
             sm.save = sm.saveToLocalFile = function (id, json) {
                 JSON.parse(json);
@@ -233,14 +256,14 @@
             sm.remove = sm.removeLocalFile = id => writeMV(mvName(id), null);
             sm.backup = id => {
                 const name = mvName(id);
-                if (has(name)) writeMV(name + '.bak', cache[name]);
+                if (hasFile(name)) writeMV(name + '.bak', readFileSync(name));
             };
-            sm.backupExists = id => has(mvName(id) + '.bak');
+            sm.backupExists = id => hasFile(mvName(id) + '.bak');
             sm.cleanBackup = id => writeMV(mvName(id) + '.bak', null);
             sm.restoreBackup = id => {
                 const name = mvName(id);
-                if (has(name + '.bak')) {
-                    writeMV(name, cache[name + '.bak']);
+                if (hasFile(name + '.bak')) {
+                    writeMV(name, readFileSync(name + '.bak'));
                     writeMV(name + '.bak', null);
                 }
             };
@@ -251,15 +274,9 @@
             sm.loadZip = sm.loadFromLocalFile = async name => {
                 const file = nameFor(name);
                 if (queues.has(file)) await queues.get(file);
-                if (!has(file) && hasFile(file)) {
-                    try { await prefetchOne(file); }
-                    catch (error) { log('warning', '存档按需加载失败: ' + file + ': ' + describe(error)); }
-                }
-                if (!has(file)) {
-                    if (sm.loadFromForage) return sm.loadFromForage(name);
-                    throw new Error('存档不存在: ' + file);
-                }
-                return cache[file];
+                if (hasFile(file)) return prefetchOne(file);
+                if (sm.loadFromForage) return sm.loadFromForage(name);
+                throw new Error('存档不存在: ' + file);
             };
             sm.saveZip = sm.saveToLocalFile = (name, zip) => {
                 const file = nameFor(name);
@@ -504,6 +521,8 @@
     window.addEventListener('blur', window.__emuReleaseKeys);
     window.addEventListener('pagehide', window.__emuReleaseKeys);
     let hostPaused = false;
+    let monitor = null;
+    let monitorStopped = false;
     let resumeScene = false;
     let pausedAudio = [];
     let pausedMedia = [];
@@ -514,6 +533,7 @@
         hostPaused = paused;
         const manager = window.SceneManager;
         if (paused) {
+            clearTimeout(monitor);
             window.__emuReleaseKeys();
             resumeScene = !!manager && !manager._stopped;
             if (resumeScene) manager.stop?.();
@@ -523,6 +543,8 @@
             pausedMedia = [...(document.querySelectorAll?.('audio, video') || [])].filter(media => !media.paused);
             for (const media of pausedMedia) media.pause();
         } else {
+            install();
+            scheduleMonitor();
             if (resumeScene) {
                 resumeStartedAt = Date.now();
                 manager?.resume?.();
@@ -550,12 +572,13 @@
         const result = Array.isArray(info) ? info.slice() : [];
         for (let id = 1; id <= dm.maxSavefiles(); id++) {
             const name = mvName(id);
-            if (!has(name)) continue;
+            if (!hasFile(name)) continue;
             const previous = result[id];
             if (previous?.globalId === dm._globalId && previous?.title === window.$dataSystem.gameTitle) continue;
             let inspected = inspectedSlots.get(name);
-            if (!inspected || inspected.raw !== cache[name]) {
-                inspected = {raw: cache[name], valid: false};
+            const revision = revisions.get(name) || 0;
+            if (!inspected || inspected.revision !== revision) {
+                inspected = {revision, valid: false};
                 try {
                     const data = JSON.parse(readRaw(name));
                     // Do not enable Continue for arbitrary JSON/config/plugin files.
@@ -658,7 +681,7 @@
             const name = drillName(settings);
             if (!name) return original.call(this, settings);
             // Do not read shared browser keys from another game's Drill plugins.
-            return has(name) ? readRaw(name) : '';
+            return hasFile(name) ? readRaw(name) : '';
         });
         wrap(sm, 'drill_COGS_saveToWebStorage', original => function (settings, json) {
             const name = drillName(settings);
@@ -724,7 +747,14 @@
     document.addEventListener('DOMContentLoaded', install);
     window.addEventListener('load', install, true);
     install();
-    const monitor = setInterval(() => {
+    function scheduleMonitor() {
+        clearTimeout(monitor);
+        if (!monitorStopped && !hostPaused && !document.hidden) {
+            monitor = setTimeout(runMonitor, ready ? 1000 : 100);
+        }
+    }
+    function runMonitor() {
+        if (monitorStopped || hostPaused || document.hidden) return;
         install();
         const manager = window.SceneManager;
         const scene = manager?._scene;
@@ -739,7 +769,16 @@
                 try { window.__emuSaveDiag(); } catch (_) { /* diagnostic only, never block the game */ }
             }
         }
-    }, 100);
+        scheduleMonitor();
+    }
+    scheduleMonitor();
+    document.addEventListener('visibilitychange', () => {
+        clearTimeout(monitor);
+        if (!document.hidden && !hostPaused && !monitorStopped) {
+            install();
+            scheduleMonitor();
+        }
+    });
     // A diagnostic timeout reports state; it never forces an unready scene ahead.
     const watchdog = setTimeout(() => {
         if (ready) return;
@@ -763,7 +802,7 @@
             errorUrl: dm?._errorUrl || null
         }));
     }, 15000);
-    window.addEventListener('pagehide', () => { clearInterval(monitor); clearTimeout(watchdog); });
+    window.addEventListener('pagehide', () => { monitorStopped = true; clearTimeout(monitor); clearTimeout(watchdog); });
     // For non-RPG HTML5 pages, report page readiness without claiming engine readiness.
     window.addEventListener('load', () => setTimeout(() => {
         if (!window.SceneManager && !window.Utils?.RPGMAKER_NAME && !failed) {

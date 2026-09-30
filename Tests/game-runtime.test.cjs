@@ -29,6 +29,16 @@ function environment({saves = {}, namespace = 'game-a', gameTitle = '', journal 
         console: {log() {}, warn() {}, error() {}},
         webkit: {messageHandlers: {emuLog: {postMessage(message) { logs.push(message); }}}},
         AbortController,
+        XMLHttpRequest: class {
+            open(method, url, async) { this.url = url; this.method = method; this.async = async; }
+            send() {
+                assert.equal(this.async, false);
+                requests.push({url: this.url, method: this.method, synchronous: true});
+                const name = decodeURIComponent(this.url.slice(6));
+                this.status = Object.prototype.hasOwnProperty.call(saves, name) ? 200 : 404;
+                this.responseText = saves[name] || '';
+            }
+        },
         localStorage: {
             get length() { return journal.size; },
             key(i) { return [...journal.keys()][i]; },
@@ -41,7 +51,7 @@ function environment({saves = {}, namespace = 'game-a', gameTitle = '', journal 
         setInterval(fn, delay) { timers.set(++sequence, {fn, delay}); return sequence; },
         clearInterval(id) { timers.delete(id); },
         addEventListener(name, fn) { if (!events.has(name)) events.set(name, []); events.get(name).push(fn); },
-        document: {readyState: 'complete', addEventListener() {}},
+        document: {readyState: 'complete', addEventListener(name, fn) { if (!events.has(name)) events.set(name, []); events.get(name).push(fn); }},
         fetch(url, options) {
             requests.push({url, ...options});
             if (fetchImpl) return fetchImpl(url, options);
@@ -67,10 +77,10 @@ function environment({saves = {}, namespace = 'game-a', gameTitle = '', journal 
     ctx.window = ctx;
     vm.createContext(ctx);
     vm.runInContext(runtime, ctx);
-    return {ctx, logs, requests, journal, events,
-        // 后台预热是幂等的；需要读磁盘存档的测试先 await env.ready。
-        ready: ctx.__emuPrefetchSaves(),
-        poll() { for (const timer of [...timers.values()]) if (timer.delay === 100) timer.fn(); }, timeout() { for (const timer of [...timers.values()]) if (timer.delay === 15000) timer.fn(); }};
+    return {ctx, logs, requests, journal, events, timers,
+        // No background preload; storage reads must work immediately.
+        ready: Promise.resolve(),
+        poll() { for (const [id, timer] of [...timers]) if (timer.delay === 100) { timers.delete(id); timer.fn(); } }, timeout() { for (const timer of [...timers.values()]) if (timer.delay === 15000) timer.fn(); }};
 }
 function mv(env) {
     env.ctx.StorageManager = {load() {}, save() {}, localFilePath() {}};
@@ -337,18 +347,20 @@ test('virtual keyboard maps all letter, digit, function and default controller k
     }
 });
 
-test('MV config/global/file are readable after warmup, and reads never refetch', async () => {
+test('MV config/global/file are readable immediately, and cached reads never refetch', async () => {
     const env = environment({saves: {'config.rpgsave': '{"alwaysDash":true}', 'global.rpgsave': '[null,{"title":"test"}]', 'file1.rpgsave': 'zip:{"system":{}}'}});
     const sm = mv(env);
     await env.ready;
     const warmed = env.requests.length;
-    assert.ok(warmed > 0, 'warmup should have fetched the saves');
+    assert.equal(warmed, 0, 'startup must not preload saves');
     assert.equal(JSON.parse(sm.load(-1)).alwaysDash, true);
     assert.equal(JSON.parse(sm.load(0))[1].title, 'test');
     assert.equal(sm.exists(1), true);
     assert.equal(sm.load(2), null);
     assert.equal(sm.load(1), '{"system":{}}');
-    assert.equal(env.requests.length, warmed, 'reads must be served from cache');
+    const readCount = env.requests.length;
+    sm.load(-1); sm.load(0); sm.load(1);
+    assert.equal(env.requests.length, readCount, 'repeated reads must be served from cache');
 });
 test('MV writes synchronously journal data, and serializes writes to the same file', async () => {
     const complete = [];
@@ -565,7 +577,8 @@ test('MV missing global index enables Continue only for complete game saves, wit
     assert.equal(env.ctx.DataManager.isThisGameFile(3), false);
     assert.equal(env.ctx.StorageManager.load(1), save);
     assert.equal(env.ctx.StorageManager.load(0), null);
-    assert.equal(env.requests.length, warmed, 'title-screen reads must be served from cache');
+    assert.equal(env.requests.length, 3, 'inspect each orphan only once');
+    assert.ok(env.requests.every(request => request.method === 'GET'), 'index inspection never writes');
     assert.equal(env.journal.size, 0);
     assert.match(env.logs.find(log => log.message.includes('file3')).message, /解压失败/);
 });
@@ -653,8 +666,8 @@ test('official MV reproduces disabled Continue and loads repaired orphan/renamed
             assert.equal(env.ctx.DataManager.isAnySavefileExists(), false);
             env.ctx.__emuInstallRuntime();
             await env.ready;
-            const warmed = env.requests.length;
             assert.equal(env.ctx.DataManager.isAnySavefileExists(), true);
+            const warmed = env.requests.length;
             // This test exercises MV's real load/extract flow; object construction
             // and JsonEx class revival belong to device/game-specific checks.
             env.ctx.DataManager.createGameObjects = () => {};
@@ -666,3 +679,109 @@ test('official MV reproduces disabled Continue and loads repaired orphan/renamed
             assert.equal(env.requests.length, warmed, 'reads must be served from cache');
         }
     });
+
+
+test('MV startup plugin can synchronously read an existing save before any fetch settles', () => {
+    const env = environment({saves: {'file1.rpgsave': 'zip:{"system":{"ready":true}}'},
+        fetch: () => new Promise(() => {})});
+    const sm = mv(env);
+    assert.equal(env.requests.length, 0);
+    assert.equal(sm.exists(1), true);
+    assert.equal(JSON.parse(sm.load(1)).system.ready, true);
+    assert.equal(env.requests.length, 1);
+    assert.equal(env.requests[0].synchronous, true);
+});
+test('MV cache stays bounded and evicted saves and backups remain readable', () => {
+    const payload = JSON.stringify({value: 'x'.repeat(2 * 1024 * 1024)});
+    const saves = Object.fromEntries([1, 2, 3, 4].map(id => ['file' + id + '.rpgsave', payload]));
+    saves['file4.rpgsave.bak'] = 'zip:{"backup":true}';
+    const env = environment({saves});
+    const sm = mv(env);
+    assert.equal(env.requests.length, 0);
+    for (let id = 1; id <= 4; id++) assert.equal(sm.load(id), payload);
+    const stats = env.ctx.__emuSaveCacheStats();
+    assert.ok(stats.bytes <= stats.limit);
+    assert.ok(stats.files < 4);
+    const before = env.requests.length;
+    assert.equal(sm.load(1), payload);
+    assert.equal(env.requests.length, before + 1, 'evicted save is read again');
+    assert.equal(sm.backupExists(4), true);
+    sm.restoreBackup(4);
+    assert.equal(sm.load(4), '{"backup":true}');
+});
+test('MZ does not preload unrelated saves or hide disk read errors behind IndexedDB', async () => {
+    const env = environment({saves: {'file1.rmmzsave': '{}', 'file2.rmmzsave': '{}'},
+        fetch: async () => ({ok: false, status: 500})});
+    const sm = mz(env);
+    sm.loadFromForage = async () => 'stale';
+    assert.equal(env.requests.length, 0);
+    await assert.rejects(sm.loadZip('file1'), /HTTP 500/);
+    assert.equal(env.requests.length, 1);
+});
+test('MZ in-flight read cannot resurrect a deleted save', async () => {
+    let release;
+    const env = environment({saves: {'file1.rmmzsave': 'old'}, fetch: (url, options) => {
+        if (options?.method === 'DELETE') return Promise.resolve({ok: true});
+        return new Promise(resolve => { release = resolve; });
+    }});
+    const sm = mz(env);
+    const reading = sm.loadZip('file1');
+    await sm.remove('file1');
+    release({ok: true, text: async () => 'old'});
+    await assert.rejects(reading, /存档不存在/);
+    assert.equal(sm.exists('file1'), false);
+});
+
+test('oversized pending MV writes survive eviction pressure and release after disk flush', async () => {
+    let release;
+    const huge = JSON.stringify({value: 'x'.repeat(5 * 1024 * 1024)});
+    const env = environment({saves: {'file2.rpgsave': '{}'},
+        fetch: () => new Promise(resolve => { release = resolve; })});
+    const sm = mv(env);
+    sm.save(1, huge);
+    await tick();
+    sm.load(2);
+    assert.equal(sm.load(1), huge);
+    assert.equal(env.journal.size, 1);
+    release({ok: true});
+    await env.ctx.__emuFlushSaves();
+    const stats = env.ctx.__emuSaveCacheStats();
+    assert.equal(env.journal.size, 0);
+    assert.ok(stats.bytes <= stats.limit);
+});
+test('MV disk read failure throws instead of returning a nonexistent save', () => {
+    const env = environment({saves: {'file1.rpgsave': '{}'}});
+    const sm = mv(env);
+    env.ctx.XMLHttpRequest.prototype.send = function () { this.status = 500; };
+    assert.equal(sm.exists(1), true);
+    assert.throws(() => sm.load(1), /HTTP 500.*file1/);
+});
+
+test('compatibility monitor slows after readiness, stops while paused/hidden, and reinstalls late plugins', () => {
+    const env = environment();
+    const bootTimers = () => [...env.timers.values()].filter(timer => timer.delay === 100);
+    const readyTimers = () => [...env.timers.values()].filter(timer => timer.delay === 1000);
+    env.ctx.SceneManager = {_scene: {constructor: {name: 'Scene_Title'}}, _sceneStarted: true, _stopped: false};
+    assert.equal(bootTimers().length, 1);
+    env.poll();
+    assert.equal(bootTimers().length, 0);
+    assert.equal(readyTimers().length, 1);
+    env.ctx.__emuSetPaused(true);
+    assert.equal(readyTimers().length, 0);
+    env.ctx.__emuSetPaused(false);
+    assert.equal(readyTimers().length, 1);
+    const original = () => 'late plugin';
+    env.ctx.DataManager = {loadDatabase: original};
+    readyTimers()[0].fn();
+    assert.notEqual(env.ctx.DataManager.loadDatabase, original);
+    assert.equal(env.ctx.DataManager.loadDatabase(), 'late plugin');
+    env.ctx.document.hidden = true;
+    env.events.get('visibilitychange').forEach(fn => fn());
+    assert.equal(readyTimers().length, 0);
+    env.ctx.document.hidden = false;
+    env.events.get('visibilitychange').forEach(fn => fn());
+    assert.equal(readyTimers().length, 1);
+    env.events.get('pagehide').forEach(fn => fn());
+    env.events.get('visibilitychange').forEach(fn => fn());
+    assert.equal(readyTimers().length, 0);
+});

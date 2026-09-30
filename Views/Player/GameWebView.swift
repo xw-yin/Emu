@@ -27,10 +27,8 @@ struct GameWebView: UIViewRepresentable {
     
     func makeUIView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
-        // 内存优化：本地游戏不需要持久化 WebKit 数据（HTTP 缓存/localStorage 落盘），
-        // 使用非持久化存储可降低 WebKit 进程的内存占用。注意：localStorage 变为
-        // 会话级，待写回日志仅在本次会话内有效（写盘失败仍会在会话内重试）。
-        configuration.websiteDataStore = .nonPersistent()
+        // Preserve pending-write journals and legacy browser saves across sessions.
+        configuration.websiteDataStore = .default()
         configuration.allowsInlineMediaPlayback = true
         configuration.mediaTypesRequiringUserActionForPlayback = []
         
@@ -163,7 +161,9 @@ struct GameWebView: UIViewRepresentable {
             self.webView = webView
         }
         
-        context.coordinator.baseScripts = configuration.userContentController.userScripts
+        // Keep our own Swift array. WebKit's userScripts getter may bridge its
+        // mutable backing array; re-adding while iterating that view grows it forever.
+        context.coordinator.baseScripts = [vorbisScript, audioScript, unlockScript]
         do {
             guard let runtimeURL = Bundle.main.url(forResource: "GameRuntime", withExtension: "js") else {
                 throw CocoaError(.fileNoSuchFile)

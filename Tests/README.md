@@ -21,6 +21,14 @@ swiftc -parse-as-library Services/LocalGameServer.swift Services/EmuScriptAssets
 /tmp/emu-server-checks
 ```
 
+On a logged-in macOS desktop, check synchronous startup reads through real WebKit,
+backup/restore, and durable disk writeback (the codec is an identity test double):
+
+```sh
+swiftc -parse-as-library Services/LocalGameServer.swift Services/EmuScriptAssets.swift Tests/GameWebKitChecks.swift -o /tmp/emu-webkit-checks
+/tmp/emu-webkit-checks
+```
+
 The existing macOS build workflow runs both offline JavaScript checks and native
 server checks before building the app. No game files are required; native checks
 create and remove their own temporary directory.
@@ -33,8 +41,17 @@ provider permissions and cloud materialization still require device verification
 
 ## Changes under test
 
-- Native save snapshot is installed before each main-document navigation. The
+- Native save metadata is installed before each main-document navigation. The
   original document's pending saves are drained on reload before the next snapshot.
+- No save bodies are preloaded at startup. MV reads missing cache entries with a
+  synchronous loopback HTTP request to preserve engine/plugin APIs; MZ fetches
+  asynchronously. Cached strings use an 8 MiB UTF-16 estimate with LRU eviction.
+  Pending MV writes stay pinned until durable writeback; a large pending write can
+  temporarily exceed the limit. Orphan-index checks retain validation results,
+  not full save strings. Evicted saves and backups remain readable.
+- External save import runs on the server queue, one file at a time. Cancelled
+  preparations cannot start a listener. The persistent WebKit store keeps failed
+  write journals available across closing/reopening the game.
 - The local server appends an installation call to standard `rpg_managers.js` and
   `rmmz_managers.js`, so hooks run before plugins/main can read configuration.
   DOM/load observers cover later definitions; custom bundled engines still need
@@ -73,6 +90,40 @@ game. Confirm the log names the storage bridge before engine startup. If startup
 takes more than 15 seconds, inspect the diagnostic line for the active scene,
 missing database files, pending images, and font states.
 
-The current Windows workspace cannot compile or execute WebKit/Network.framework.
-The JavaScript tests and upstream MV integration were run locally; the macOS checks
-are provided for the next build and must not be represented as already passed.
+The optional upstream MV integration requires EMU_MV_SOURCE_DIR; without it those
+checks are skipped. Offline checks do not establish crash recovery on a real iOS
+device or compatibility with every game/plugin.
+
+## Performance regression checks
+
+```sh
+swiftc -parse-as-library Services/GameLogManager.swift Tests/GameLogChecks.swift -o /tmp/emu-log-checks
+/tmp/emu-log-checks
+swiftc -parse-as-library Models/Game.swift Services/GameLibraryManager.swift Tests/GameLibraryChecks.swift -o /tmp/emu-library-checks
+/tmp/emu-library-checks
+```
+
+Server checks also verify byte-exact responses spanning multiple 64 KiB sends,
+range/HEAD/empty-file framing, conditional static-resource caching, changed-file
+invalidation and session isolation. Saves remain `no-store`. Static assets require
+ETag revalidation because different games reuse the same loopback origin.
+Library checks cover persistent IDs, unchanged refreshes and stale removal scans.
+Log checks cover one publication per batch, concurrent producers and reset isolation.
+Runtime checks verify 100 ms startup / 1 s post-readiness compatibility checks,
+pause/visibility suspension, resumed installation and late plugin replacements.
+Thumbnail loading uses coordinated ImageIO downsampling on a serial worker with a
+24 MiB cache budget; external file-provider permissions still need device coverage.
+
+On an Apple Silicon Mac with a booted simulator, exercise the production thumbnail
+loader (replace the UDID with the booted device):
+
+```sh
+EMU_SIM_SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
+xcrun swiftc -parse-as-library -sdk "$EMU_SIM_SDK" -target arm64-apple-ios18.0-simulator Models/Game.swift Services/HapticManager.swift Views/Library/GameCardView.swift Tests/CoverThumbnailChecks.swift -o /tmp/emu-thumbnail-checks
+xcrun simctl spawn SIMULATOR_UDID /tmp/emu-thumbnail-checks
+```
+
+This checks decode dimensions, reuse, changed-file invalidation and a missing
+cover. A 4096×2160 fixture decodes to 512×270 (552,960 pixel-storage bytes),
+without retaining a full-sized decoded cover in the card cache. This is a
+thumbnail allocation check, not an app-wide memory or frame-rate measurement.

@@ -1,10 +1,13 @@
 import SwiftUI
+import ImageIO
 
 /// 次世代流体玻璃风格游戏卡片（全面适配横竖屏自适应）
 struct GameCardView: View {
     let game: Game
     let onPlay: () -> Void
     
+    @State private var thumbnail: UIImage?
+    @Environment(\.displayScale) private var displayScale
     @Environment(\.verticalSizeClass) private var verticalSizeClass
     @Environment(\.colorScheme) private var colorScheme
     private var isLandscape: Bool { verticalSizeClass == .compact }
@@ -18,8 +21,7 @@ struct GameCardView: View {
                 // 封面图区域
                 ZStack(alignment: .topTrailing) {
                     Group {
-                        if let coverPath = game.coverImageRelativePath,
-                           let uiImage = UIImage(contentsOfFile: coverPath) {
+                        if let uiImage = thumbnail {
                             Image(uiImage: uiImage)
                                 .resizable()
                                 .scaledToFill()
@@ -85,6 +87,18 @@ struct GameCardView: View {
             .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.3 : 0.06), radius: 10, x: 0, y: 4)
         }
         .buttonStyle(ScaleButtonStyle())
+        .task(id: CoverThumbnailRequest(path: game.coverImageRelativePath,
+                                       bookmark: game.securityBookmarkData,
+                                       modified: game.coverImageModifiedAt,
+                                       pixels: Int(230 * displayScale))) {
+            thumbnail = nil
+            let image = await CoverThumbnailCache.shared.load(
+                path: game.coverImageRelativePath, bookmark: game.securityBookmarkData,
+                maxPixels: Int(230 * displayScale))
+            guard !Task.isCancelled else { return }
+            thumbnail = image
+        }
+        .onDisappear { thumbnail = nil }
     }
 }
 
@@ -93,5 +107,63 @@ struct ScaleButtonStyle: ButtonStyle {
         configuration.label
             .scaleEffect(configuration.isPressed ? 0.95 : 1.0)
             .animation(.interactiveSpring(response: 0.2, dampingFraction: 0.6), value: configuration.isPressed)
+    }
+}
+
+private struct CoverThumbnailRequest: Hashable {
+    let path: String?
+    let bookmark: Data?
+    let modified: Date?
+    let pixels: Int
+}
+
+// ImageIO decodes only a card-sized thumbnail; the serial worker also bounds
+// simultaneous decodes. Metadata invalidates changed covers without caching originals.
+// Mutable work is confined to queue; NSCache supports concurrent access.
+final class CoverThumbnailCache: @unchecked Sendable {
+    static let shared = CoverThumbnailCache()
+    private let cache = NSCache<NSString, UIImage>()
+    private let queue = DispatchQueue(label: "com.emu.cover.thumbnails", qos: .userInitiated)
+
+    private init() { cache.totalCostLimit = 24 * 1024 * 1024 }
+
+    func load(path: String?, bookmark: Data?, maxPixels: Int) async -> UIImage? {
+        guard let path else { return nil }
+        return await withCheckedContinuation { continuation in
+            queue.async {
+                var scopedURL: URL?
+                if let bookmark {
+                    var stale = false
+                    guard let url = try? URL(resolvingBookmarkData: bookmark, options: [],
+                                             relativeTo: nil, bookmarkDataIsStale: &stale),
+                          url.startAccessingSecurityScopedResource() else {
+                        continuation.resume(returning: nil)
+                        return
+                    }
+                    scopedURL = url
+                }
+                defer { scopedURL?.stopAccessingSecurityScopedResource() }
+                let url = URL(fileURLWithPath: path)
+                var result: UIImage?
+                var error: NSError?
+                NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &error) { readable in
+                    let values = try? readable.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+                    let key = "\(path)|\(maxPixels)|\(values?.fileSize ?? 0)|\(values?.contentModificationDate?.timeIntervalSince1970 ?? 0)" as NSString
+                    if let cached = self.cache.object(forKey: key) { result = cached; return }
+                    guard let source = CGImageSourceCreateWithURL(readable as CFURL,
+                        [kCGImageSourceShouldCache: false] as CFDictionary),
+                          let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                            kCGImageSourceCreateThumbnailFromImageAlways: true,
+                            kCGImageSourceCreateThumbnailWithTransform: true,
+                            kCGImageSourceShouldCacheImmediately: true,
+                            kCGImageSourceThumbnailMaxPixelSize: max(1, maxPixels)
+                          ] as CFDictionary) else { return }
+                    let image = UIImage(cgImage: cgImage)
+                    self.cache.setObject(image, forKey: key, cost: cgImage.bytesPerRow * cgImage.height)
+                    result = image
+                }
+                continuation.resume(returning: result)
+            }
+        }
     }
 }

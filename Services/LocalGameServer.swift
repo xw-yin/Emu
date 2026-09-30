@@ -9,6 +9,7 @@ import Combine
 final class LocalGameServer: ObservableObject {
     static let shared = LocalGameServer()
     
+    private var startupGeneration = UUID()
     private var listener: NWListener?
     private var rootDirectoryURL: URL?
     private var persistentSaveDirectory: URL?
@@ -27,43 +28,57 @@ final class LocalGameServer: ObservableObject {
     
     private init() {}
     
-    /// 启动本地服务器并指定根目录
-    func start(serving directoryURL: URL, saveDirectory: URL? = nil) throws {
+    /// Prepare external files off the UI thread, then publish listener state on main.
+    func start(serving directoryURL: URL, saveDirectory: URL? = nil,
+               completion: @escaping (Result<Void, Error>) -> Void) {
         stop()
         lastError = nil
-        try queue.sync {
-            self.rootDirectoryURL = directoryURL
-            if let destination = saveDirectory {
-                let fm = FileManager.default
-                try fm.createDirectory(at: destination, withIntermediateDirectories: true)
-                let marker = destination.appendingPathComponent(".imported")
-                if !fm.fileExists(atPath: marker.path) {
-                    let existing = try self.readSaves()
-                    for (name, text) in existing {
-                        let target = destination.appendingPathComponent(name)
-                        if !fm.fileExists(atPath: target.path) {
-                            try Data(text.utf8).write(to: target, options: .atomic)
-                        }
-                    }
-                    try Data("1".utf8).write(to: marker, options: .atomic)
-                }
-                self.persistentSaveDirectory = destination
-            }
-        }
-        
+        let generation = startupGeneration
         GameLogManager.shared.reset()
         GameLogManager.shared.log("正在准备本地环境与资源索引...")
-        if saveDirectory != nil {
-            GameLogManager.shared.log("外部游戏存档已使用 App 内独立目录，原游戏文件保持不变")
+        queue.async {
+            let result = Result<Void, Error> {
+                self.rootDirectoryURL = directoryURL
+                if let destination = saveDirectory {
+                    let fm = FileManager.default
+                    try fm.createDirectory(at: destination, withIntermediateDirectories: true)
+                    let marker = destination.appendingPathComponent(".imported")
+                    if !fm.fileExists(atPath: marker.path) {
+                        // Read and write one file at a time; never retain every save body.
+                        for name in try self.readSavesMeta().keys {
+                            guard let source = self.saveURL(path: "/save/" + name) else {
+                                throw CocoaError(.fileReadNoPermission)
+                            }
+                            let target = destination.appendingPathComponent(name)
+                            if !fm.fileExists(atPath: target.path) {
+                                try self.coordinatedRead(source).write(to: target, options: .atomic)
+                            }
+                        }
+                        try Data("1".utf8).write(to: marker, options: .atomic)
+                    }
+                    self.persistentSaveDirectory = destination
+                }
+            }
+            DispatchQueue.main.async {
+                guard self.startupGeneration == generation else {
+                    completion(.failure(URLError(.cancelled)))
+                    return
+                }
+                do {
+                    try result.get()
+                    if saveDirectory != nil {
+                        GameLogManager.shared.log("外部游戏存档已使用 App 内独立目录，原游戏文件保持不变")
+                    }
+                    try self.startListener(preferredPort: 8080)
+                    completion(.success(()))
+                } catch {
+                    self.lastError = error.localizedDescription
+                    completion(.failure(error))
+                }
+            }
         }
-        
-        cacheLock.lock()
-        resolvedPathCache.removeAll()
-        cacheLock.unlock()
-        
-        try startListener(preferredPort: 8080)
     }
-    
+
     private func startListener(preferredPort: UInt16?) throws {
         let tcpOptions = NWProtocolTCP.Options()
         tcpOptions.noDelay = true
@@ -127,15 +142,16 @@ final class LocalGameServer: ObservableObject {
     }
     
     func stop() {
+        startupGeneration = UUID()
         listener?.cancel()
         listener = nil
         isRunning = false
-        queue.sync {
-            sessionID = UUID()
-            rootDirectoryURL = nil
-            persistentSaveDirectory = nil
-            for connection in connections.values { connection.cancel() }
-            connections.removeAll()
+        queue.async {
+            self.sessionID = UUID()
+            self.rootDirectoryURL = nil
+            self.persistentSaveDirectory = nil
+            for connection in self.connections.values { connection.cancel() }
+            self.connections.removeAll()
         }
         cacheLock.lock()
         resolvedPathCache.removeAll()
@@ -416,6 +432,38 @@ final class LocalGameServer: ObservableObject {
         return try result.get()
     }
 
+    // Opening under coordination lets a provider materialize the file. Keep the
+    // descriptor (rather than the path) for the response, including atomic replacements.
+    private final class ResourceFile {
+        let handle: FileHandle
+        let size: Int
+        let modified: TimeInterval
+        init(url: URL) throws {
+            handle = try FileHandle(forReadingFrom: url)
+            do {
+                size = Int(try handle.seekToEnd())
+                try handle.seek(toOffset: 0)
+                modified = (try url.resourceValues(forKeys: [.contentModificationDateKey]))
+                    .contentModificationDate?.timeIntervalSince1970 ?? 0
+            } catch {
+                try? handle.close()
+                throw error
+            }
+        }
+        deinit { try? handle.close() }
+    }
+
+    private func coordinatedOpen(_ url: URL) throws -> ResourceFile {
+        var coordinationError: NSError?
+        var result: Result<ResourceFile, Error>?
+        NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &coordinationError) { readableURL in
+            result = Result { try ResourceFile(url: readableURL) }
+        }
+        if let error = coordinationError { throw error }
+        guard let result else { throw CocoaError(.fileReadUnknown) }
+        return try result.get()
+    }
+
     /// 存档元信息：文件名(小写)→["size": 字节数]，供 JS 按需拉取正文。
     /// 目录解析与 readSaves()/saveURL() 保持一致（含外部独立存档目录）。
     private func readSavesMeta() throws -> [String: [String: Any]] {
@@ -569,16 +617,37 @@ final class LocalGameServer: ObservableObject {
             return
         }
 
-        var fileData: Data
+        let resource: ResourceFile
         do {
-            fileData = try coordinatedRead(targetFileURL)
+            resource = try coordinatedOpen(targetFileURL)
         } catch {
-            let detail = error as NSError
-            GameLogManager.shared.log("文件读取失败 (500): \(sanitizedPath): \(detail.domain)(\(detail.code)) \(detail.localizedDescription)", level: .error)
-            sendResponse(connection: connection, statusCode: 500, headers: ["Access-Control-Allow-Origin": "*"], body: Data("Read Error".utf8))
+            GameLogManager.shared.log("文件读取失败 (500): \(sanitizedPath): \(error.localizedDescription)", level: .error)
+            sendResponse(connection: connection, statusCode: 500, headers: [:], body: Data("Read Error".utf8))
             return
         }
-        
+        // Same origin is reused between games: revalidate with a session-specific
+        // validator instead of serving fresh cached files from the previous game.
+        let isSave = relativePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            .lowercased().hasPrefix("save/")
+        let etag = "W/\"\(sessionID.uuidString)-\(resource.size)-\(resource.modified)\""
+        let cacheHeaders = isSave ? ["Cache-Control": "no-store"] :
+            ["Cache-Control": "private, no-cache", "ETag": etag]
+        if !isSave, requestHeaders["if-none-match"] == etag {
+            sendResponse(connection: connection, statusCode: 304, headers: cacheHeaders, body: Data())
+            return
+        }
+        let adaptedNames = ["rpg_managers.js", "rmmz_managers.js", "drill_coreofglobalsave.js",
+                            "drill_dialogcharouterglow.js", "mpp_choiceex.js", "drill_titletiledgif.js"]
+        let needsAdapter = adaptedNames.contains(targetFileURL.lastPathComponent.lowercased())
+        var fileData = Data()
+        if needsAdapter {
+            do { fileData = try coordinatedRead(targetFileURL) }
+            catch {
+                sendResponse(connection: connection, statusCode: 500, headers: [:], body: Data("Read Error".utf8))
+                return
+            }
+        }
+
         // Install synchronously after the managers are defined, before plugins/main.
         if ["rpg_managers.js", "rmmz_managers.js", "drill_coreofglobalsave.js"].contains(targetFileURL.lastPathComponent.lowercased()) {
             fileData.append(Data("\n;window.__emuInstallRuntime && window.__emuInstallRuntime();\n".utf8))
@@ -625,11 +694,12 @@ final class LocalGameServer: ObservableObject {
             }
         }
 
-        let totalCount = fileData.count
+        let totalCount = needsAdapter ? fileData.count : resource.size
         let mime = mimeType(for: targetFileURL.pathExtension)
         
         // 4. 解析 HTTP Range 请求 (iOS WebKit 流媒体核心要求)
-        if let rangeHeader = requestHeaders["range"], rangeHeader.hasPrefix("bytes=") {
+        if let rangeHeader = requestHeaders["range"], rangeHeader.hasPrefix("bytes="),
+           requestHeaders["if-range"] == nil {
             let rangeSpec = String(rangeHeader.dropFirst(6))
             let parts = rangeSpec.split(separator: "-", omittingEmptySubsequences: false)
             var start = -1
@@ -651,9 +721,8 @@ final class LocalGameServer: ObservableObject {
             }
 
             let chunkLength = end - start + 1
-            let chunk = fileData.subdata(in: start..<(start + chunkLength))
             
-            let headers: [String: String] = [
+            var headers: [String: String] = [
                 "Content-Type": mime,
                 "Content-Range": "bytes \(start)-\(end)/\(totalCount)",
                 "Content-Length": "\(chunkLength)",
@@ -665,7 +734,16 @@ final class LocalGameServer: ObservableObject {
             
             let chunkKb = max(1, chunkLength / 1024)
             GameLogManager.shared.log("🎵 音频流: \(sanitizedPath) (\(chunkKb) KB)", level: .server)
-            sendResponse(connection: connection, statusCode: 206, headers: headers, body: method == "HEAD" ? Data() : chunk)
+            headers.merge(cacheHeaders) { _, new in new }
+            if method == "HEAD" {
+                sendResponse(connection: connection, statusCode: 206, headers: headers, body: Data())
+            } else if needsAdapter {
+                sendResponse(connection: connection, statusCode: 206, headers: headers,
+                             body: fileData.subdata(in: start..<(start + chunkLength)))
+            } else {
+                sendFile(connection: connection, statusCode: 206, headers: headers,
+                         resource: resource, offset: start, length: chunkLength)
+            }
             return
         }
         
@@ -688,7 +766,7 @@ final class LocalGameServer: ObservableObject {
         }
         GameLogManager.shared.log("\(icon): \(sanitizedPath) (\(kb) KB)", level: .success)
         
-        let headers: [String: String] = [
+        var headers: [String: String] = [
             "Content-Type": mime,
             "Content-Length": "\(totalCount)",
             "Accept-Ranges": "bytes",
@@ -697,7 +775,13 @@ final class LocalGameServer: ObservableObject {
             "Cache-Control": "no-cache"
         ]
         
-        sendResponse(connection: connection, statusCode: 200, headers: headers, body: method == "HEAD" ? Data() : fileData)
+        headers.merge(cacheHeaders) { _, new in new }
+        if method == "HEAD" || needsAdapter {
+            sendResponse(connection: connection, statusCode: 200, headers: headers, body: method == "HEAD" ? Data() : fileData)
+        } else {
+            sendFile(connection: connection, statusCode: 200, headers: headers,
+                     resource: resource, offset: 0, length: totalCount)
+        }
     }
     
     /// 带缓存的大小写不敏感递归查找文件（解决 Windows 到 iOS APFS 的路径大小写不一致并加速二次查找）
@@ -741,11 +825,52 @@ final class LocalGameServer: ObservableObject {
         return result
     }
     
+    // One 64 KiB read per processed send: a slow client cannot queue a full
+    // asset in memory. The descriptor is released on completion/cancellation.
+    private func sendFile(connection: NWConnection, statusCode: Int, headers: [String: String],
+                          resource: ResourceFile, offset: Int, length: Int) {
+        do { try resource.handle.seek(toOffset: UInt64(offset)) }
+        catch {
+            sendResponse(connection: connection, statusCode: 500, headers: [:], body: Data("Read Error".utf8))
+            return
+        }
+        connection.send(content: responseHeaders(statusCode: statusCode, headers: headers, length: length),
+                        isComplete: true, completion: .contentProcessed { error in
+            guard error == nil else { connection.cancel(); return }
+            self.sendFileChunk(connection: connection, resource: resource, remaining: length)
+        })
+    }
+
+    private func sendFileChunk(connection: NWConnection, resource: ResourceFile, remaining: Int) {
+        guard connections[ObjectIdentifier(connection)] === connection else { connection.cancel(); return }
+        do {
+            let chunk = try resource.handle.read(upToCount: min(64 * 1024, remaining)) ?? Data()
+            guard !chunk.isEmpty || remaining == 0 else { connection.cancel(); return }
+            let rest = remaining - chunk.count
+            connection.send(content: chunk, contentContext: rest == 0 ? .finalMessage : .defaultMessage,
+                            isComplete: true, completion: .contentProcessed { error in
+                if error != nil || rest == 0 { connection.cancel(); return }
+                self.sendFileChunk(connection: connection, resource: resource, remaining: rest)
+            })
+        } catch { connection.cancel() }
+    }
+
     private func sendResponse(connection: NWConnection, statusCode: Int, headers: [String: String], body: Data) {
+        let header = responseHeaders(statusCode: statusCode, headers: headers, length: body.count)
+        // Send headers separately, avoiding a second full copy of the body.
+        connection.send(content: header, isComplete: true, completion: .contentProcessed { error in
+            guard error == nil else { connection.cancel(); return }
+            connection.send(content: body, contentContext: .finalMessage, isComplete: true,
+                            completion: .contentProcessed { _ in connection.cancel() })
+        })
+    }
+
+    private func responseHeaders(statusCode: Int, headers: [String: String], length: Int) -> Data {
         let statusText: String
         switch statusCode {
         case 200: statusText = "OK"
         case 206: statusText = "Partial Content"
+        case 304: statusText = "Not Modified"
         case 400: statusText = "Bad Request"
         case 409: statusText = "Conflict"
         case 416: statusText = "Range Not Satisfiable"
@@ -758,9 +883,10 @@ final class LocalGameServer: ObservableObject {
         
         var effectiveHeaders = headers
         effectiveHeaders["Connection"] = "close"
-        if effectiveHeaders["Content-Length"] == nil { effectiveHeaders["Content-Length"] = "\(body.count)" }
+        if statusCode == 304 { effectiveHeaders.removeValue(forKey: "Content-Length") }
+        else if effectiveHeaders["Content-Length"] == nil { effectiveHeaders["Content-Length"] = "\(length)" }
         effectiveHeaders["Access-Control-Allow-Origin"] = "*"
-        effectiveHeaders["Cache-Control"] = "no-store"
+        if effectiveHeaders["Cache-Control"] == nil { effectiveHeaders["Cache-Control"] = "no-store" }
         
         var headerString = "HTTP/1.1 \(statusCode) \(statusText)\r\n"
         for (key, val) in effectiveHeaders {
@@ -768,14 +894,9 @@ final class LocalGameServer: ObservableObject {
         }
         headerString += "\r\n"
         
-        var packet = Data(headerString.utf8)
-        packet.append(body)
-        
-        connection.send(content: packet, contentContext: .finalMessage, isComplete: true, completion: .contentProcessed({ _ in
-            connection.cancel()
-        }))
+        return Data(headerString.utf8)
     }
-    
+
     private func mimeType(for ext: String) -> String {
         switch ext.lowercased() {
         case "html", "htm": return "text/html; charset=utf-8"
