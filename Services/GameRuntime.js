@@ -4,7 +4,7 @@
     'use strict';
     const bootstrap = window.__emuBootstrap;
     if (!bootstrap) throw new Error('Emu save snapshot is missing');
-    // Keep only metadata at startup. MV reads synchronously on demand; MZ uses fetch.
+    // Native startup cache is bounded; larger MV files stay on demand, MZ uses fetch.
     const meta = bootstrap.savesMeta || Object.create(null);
     const cache = Object.create(null);
     const cacheOrder = new Map();
@@ -14,6 +14,7 @@
     const prefix = 'emu.pending.' + bootstrap.namespace + '.';
     const pending = Object.create(null);
     const queues = new Map();
+    const journalAliases = new Map();
     let ready = false;
     let failed = false;
 
@@ -86,6 +87,11 @@
         if (value === null) { forget(name); delete meta[name]; }
         else { meta[name] = {size: String(value).length}; remember(name, value); }
     }
+    for (const [name, text] of Object.entries(bootstrap.startupSaves || {})) {
+        if (hasFile(name) && typeof text === 'string') remember(name, text);
+    }
+    delete bootstrap.startupSaves;
+
     function readFileSync(name) {
         if (has(name)) return cached(name);
         if (!hasFile(name)) return null;
@@ -93,7 +99,10 @@
         // server runs on a native background queue, independent of this JS thread.
         const xhr = new XMLHttpRequest();
         xhr.open('GET', '/save/' + encodeURIComponent(name), false);
-        xhr.send(null);
+        try { xhr.send(null); }
+        catch (error) {
+            throw new Error('同步存档读取失败: ' + name + ': ' + describe(error));
+        }
         if (xhr.status !== 200) throw new Error('存档读取失败 HTTP ' + xhr.status + ': ' + name);
         const text = xhr.responseText;
         remember(name, text);
@@ -146,6 +155,8 @@
             // An older completed write must not remove a newer pending write.
             if (pending[name] === value) {
                 localStorage.removeItem(prefix + name);
+                for (const key of journalAliases.get(name) || []) localStorage.removeItem(key);
+                journalAliases.delete(name);
                 delete pending[name];
                 trimCache();
             }
@@ -166,7 +177,11 @@
             const key = localStorage.key(i);
             if (!key.startsWith(prefix)) continue;
             try {
-                const name = validName(key.slice(prefix.length));
+                const name = validName(key.slice(prefix.length)).toLowerCase();
+                if (key !== prefix + name) {
+                    if (!journalAliases.has(name)) journalAliases.set(name, new Set());
+                    journalAliases.get(name).add(key);
+                }
                 const value = JSON.parse(localStorage.getItem(key));
                 if (value !== null && typeof value !== 'string') throw new Error('Invalid pending save: ' + name);
                 pending[name] = value;
@@ -186,7 +201,7 @@
             return n < 0 ? 'config.rpgsave' : n === 0 ? 'global.rpgsave' : 'file' + n + '.rpgsave';
         }
         const key = String(id).replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, 64) || 'custom';
-        return 'plugin_' + key + '.rpgsave';
+        return ('plugin_' + key + '.rpgsave').toLowerCase();
     }
     function readRaw(name) {
         const raw = readFileSync(name);

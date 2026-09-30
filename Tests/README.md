@@ -43,9 +43,12 @@ provider permissions and cloud materialization still require device verification
 
 - Native save metadata is installed before each main-document navigation. The
   original document's pending saves are drained on reload before the next snapshot.
-- No save bodies are preloaded at startup. MV reads missing cache entries with a
-  synchronous loopback HTTP request to preserve engine/plugin APIs; MZ fetches
-  asynchronously. Cached strings use an 8 MiB UTF-16 estimate with LRU eviction.
+- Small MV saves are prepared natively before navigation (256 KiB per file,
+  1 MiB total, prioritizing config/global/plugin data). No asynchronous preload
+  races engine startup. Larger/uncached MV saves still use synchronous loopback
+  HTTP; MZ remains asynchronous. Provider asset preparation runs on four workers
+  independently of the network/save queue, so a slow asset cannot block all saves.
+  Cached strings use an 8 MiB UTF-16 estimate with LRU eviction.
   Pending MV writes stay pinned until durable writeback; a large pending write can
   temporarily exceed the limit. Orphan-index checks retain validation results,
   not full save strings. Evicted saves and backups remain readable.
@@ -127,3 +130,8 @@ This checks decode dimensions, reuse, changed-file invalidation and a missing
 cover. A 4096×2160 fixture decodes to 512×270 (552,960 pixel-storage bytes),
 without retaining a full-sized decoded cover in the card cache. This is a
 thumbnail allocation check, not an app-wide memory or frame-rate measurement.
+
+Startup timeout checks cover plugin string-key case normalization, native small
+save reads with synchronous HTTP deliberately disabled, and a held file-provider
+coordination lock while another request reads a save. The 1 MiB startup snapshot
+and 256 KiB file caps are verified separately from the 8 MiB runtime LRU cache.

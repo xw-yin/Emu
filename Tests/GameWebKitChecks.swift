@@ -41,7 +41,8 @@ struct GameWebKitChecks {
             window.LZString = {compressToBase64: value => value};
             window.StorageManager = {load() {}, save() {}, localFilePath() {}};
             window.__emuInstallRuntime();
-            if (window.__emuSaveCacheStats().files !== 0) throw new Error('Unexpected preload');
+            if (window.__emuSaveCacheStats().files !== 1) throw new Error('Small save missing from startup cache');
+            window.XMLHttpRequest = class { open() {} send() { throw new Error('Sync network must not be needed for this startup read'); } };
             if (!StorageManager.exists(1)) throw new Error('Save missing');
             const first = JSON.parse(StorageManager.load(1));
             if (!first.system.ready) throw new Error('Synchronous startup read failed');

@@ -17,6 +17,14 @@ final class LocalGameServer: ObservableObject {
     private var connections: [ObjectIdentifier: NWConnection] = [:]
     // 使用高速串行队列（遵循 Apple Network.framework 对单连接串行化的严格要求，杜绝死锁与丢包）
     private let queue = DispatchQueue(label: "com.emu.localserver", qos: .userInteractive)
+    // Provider coordination/materialization must not block HTTP acceptance or saves.
+    private let resourceQueue: OperationQueue = {
+        let queue = OperationQueue()
+        queue.name = "com.emu.resource.prepare"
+        queue.qualityOfService = .userInitiated
+        queue.maxConcurrentOperationCount = 4
+        return queue
+    }()
     
     // 路径大小写匹配内存高速缓存（大幅减少 APFS 磁盘目录遍历开销）
     private var resolvedPathCache = [String: URL]()
@@ -143,6 +151,7 @@ final class LocalGameServer: ObservableObject {
     
     func stop() {
         startupGeneration = UUID()
+        resourceQueue.cancelAllOperations()
         listener?.cancel()
         listener = nil
         isRunning = false
@@ -313,7 +322,21 @@ final class LocalGameServer: ObservableObject {
         
         // 文件读取请求 GET / HEAD
         if req.method == "GET" || req.method == "HEAD" {
-            serveFile(at: req.path, method: req.method, requestHeaders: req.headers, connection: connection)
+            guard let root = rootDirectoryURL else {
+                sendResponse(connection: connection, statusCode: 500, headers: [:], body: Data())
+                return
+            }
+            let saves = persistentSaveDirectory
+            let session = sessionID
+            if req.path.lowercased().hasPrefix("/save/") {
+                serveFile(at: req.path, method: req.method, requestHeaders: req.headers,
+                          connection: connection, root: root, saveDirectory: saves, session: session)
+            } else {
+                resourceQueue.addOperation {
+                    self.serveFile(at: req.path, method: req.method, requestHeaders: req.headers,
+                                   connection: connection, root: root, saveDirectory: saves, session: session)
+                }
+            }
             return
         }
         
@@ -333,18 +356,52 @@ final class LocalGameServer: ObservableObject {
                    let system = (try? JSONSerialization.jsonObject(with: systemData)) as? [String: Any] {
                     gameTitle = system["gameTitle"] as? String ?? ""
                 }
+                let meta = try self.readSavesMeta()
+                let startup = self.readStartupSaves(meta)
                 return try JSONSerialization.data(withJSONObject: [
                     "namespace": namespace,
                     "session": self.sessionID.uuidString,
                     "gameTitle": gameTitle,
-                    // 内存优化：只下发存档元信息（文件名→字节数），正文由 JS 按需
-                    // 经 GET /save/<name> 拉取。不再把全量存档拼进 user script，
-                    // 避免 atob/逐字符解码的瞬时内存峰值与常驻巨型字符串。
-                    "savesMeta": try self.readSavesMeta()
+                    "savesMeta": meta,
+                    // A bounded snapshot makes small MV plugin/config reads purely
+                    // synchronous in memory, before any game asset requests exist.
+                    "startupSaves": startup
                 ])
             }
             DispatchQueue.main.async { completion(result) }
         }
+    }
+
+    private func readStartupSaves(_ meta: [String: [String: Any]]) -> [String: String] {
+        let maxFileBytes = 256 * 1024
+        let maxTotalBytes = 1024 * 1024
+        var used = 0
+        var result: [String: String] = [:]
+        // Config/global/plugin data take precedence over save slots and backups.
+        let names = meta.keys.sorted {
+            func rank(_ name: String) -> Int {
+                if name.hasSuffix(".bak") { return 2 }
+                if name.range(of: "^file[0-9]+\\.rpgsave$", options: .regularExpression) != nil { return 1 }
+                return 0
+            }
+            return rank($0) == rank($1) ? $0 < $1 : rank($0) < rank($1)
+        }
+        for name in names where name.hasSuffix(".rpgsave") || name.hasSuffix(".rpgsave.bak") {
+            let size = (meta[name]?["size"] as? NSNumber)?.intValue ?? 0
+            guard size <= maxFileBytes, used + size <= maxTotalBytes,
+                  let url = saveURL(path: "/save/" + name) else { continue }
+            do {
+                let data = try coordinatedRead(url)
+                guard data.count <= maxFileBytes, used + data.count <= maxTotalBytes,
+                      let text = String(data: data, encoding: .utf8) else { continue }
+                result[name] = text
+                used += data.count
+            } catch {
+                GameLogManager.shared.log("启动存档缓存跳过 \(name): \(error.localizedDescription)", level: .warning)
+            }
+        }
+        GameLogManager.shared.log("启动存档缓存已准备: \(result.count) 个文件，\(used) 字节（上限 1 MiB）")
+        return result
     }
 
     private func isSaveName(_ name: String) -> Bool {
@@ -557,14 +614,12 @@ final class LocalGameServer: ObservableObject {
     }
 
     // MARK: - 文件检索与分段响应 (HTTP 206 Partial Content)
-    private func serveFile(at relativePath: String, method: String, requestHeaders: [String: String], connection: NWConnection) {
-        guard var rootURL = rootDirectoryURL else {
-            sendResponse(connection: connection, statusCode: 500, headers: [:], body: Data("Server Not Configured".utf8))
-            return
-        }
+    private func serveFile(at relativePath: String, method: String, requestHeaders: [String: String],
+                           connection: NWConnection, root: URL, saveDirectory: URL?, session: UUID) {
+        var rootURL = root
         
         var sanitizedPath = relativePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        if let directory = persistentSaveDirectory, sanitizedPath.hasPrefix("save/") {
+        if let directory = saveDirectory, sanitizedPath.hasPrefix("save/") {
             let name = String(sanitizedPath.dropFirst(5))
             guard isSaveName(name), !name.contains("/") else {
                 sendResponse(connection: connection, statusCode: 403, headers: [:], body: Data())
@@ -629,7 +684,7 @@ final class LocalGameServer: ObservableObject {
         // validator instead of serving fresh cached files from the previous game.
         let isSave = relativePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             .lowercased().hasPrefix("save/")
-        let etag = "W/\"\(sessionID.uuidString)-\(resource.size)-\(resource.modified)\""
+        let etag = "W/\"\(session.uuidString)-\(resource.size)-\(resource.modified)\""
         let cacheHeaders = isSave ? ["Cache-Control": "no-store"] :
             ["Cache-Control": "private, no-cache", "ETag": etag]
         if !isSave, requestHeaders["if-none-match"] == etag {
@@ -829,6 +884,15 @@ final class LocalGameServer: ObservableObject {
     // asset in memory. The descriptor is released on completion/cancellation.
     private func sendFile(connection: NWConnection, statusCode: Int, headers: [String: String],
                           resource: ResourceFile, offset: Int, length: Int) {
+        queue.async {
+            guard self.connections[ObjectIdentifier(connection)] === connection else { connection.cancel(); return }
+            self.beginSendingFile(connection: connection, statusCode: statusCode, headers: headers,
+                                  resource: resource, offset: offset, length: length)
+        }
+    }
+
+    private func beginSendingFile(connection: NWConnection, statusCode: Int, headers: [String: String],
+                                  resource: ResourceFile, offset: Int, length: Int) {
         do { try resource.handle.seek(toOffset: UInt64(offset)) }
         catch {
             sendResponse(connection: connection, statusCode: 500, headers: [:], body: Data("Read Error".utf8))
@@ -858,11 +922,14 @@ final class LocalGameServer: ObservableObject {
     private func sendResponse(connection: NWConnection, statusCode: Int, headers: [String: String], body: Data) {
         let header = responseHeaders(statusCode: statusCode, headers: headers, length: body.count)
         // Send headers separately, avoiding a second full copy of the body.
-        connection.send(content: header, isComplete: true, completion: .contentProcessed { error in
-            guard error == nil else { connection.cancel(); return }
-            connection.send(content: body, contentContext: .finalMessage, isComplete: true,
-                            completion: .contentProcessed { _ in connection.cancel() })
-        })
+        queue.async {
+            guard self.connections[ObjectIdentifier(connection)] === connection else { connection.cancel(); return }
+            connection.send(content: header, isComplete: true, completion: .contentProcessed { error in
+                guard error == nil else { connection.cancel(); return }
+                connection.send(content: body, contentContext: .finalMessage, isComplete: true,
+                                completion: .contentProcessed { _ in connection.cancel() })
+            })
+        }
     }
 
     private func responseHeaders(statusCode: Int, headers: [String: String], length: Int) -> Data {

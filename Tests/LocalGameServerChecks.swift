@@ -82,12 +82,37 @@ struct LocalGameServerChecks {
         let initial = try await bootstrap()
         let session = initial["session"] as! String
         try require(initial["saves"] == nil, "Bootstrap must not embed full save contents (memory)")
+        let startupSaves = initial["startupSaves"] as! [String: String]
+        try require(startupSaves["config.rpgsave"] == "{}", "Small MV saves are ready before engine scripts")
         let initialMeta = initial["savesMeta"] as! [String: [String: Any]]
         try require((initialMeta["config.rpgsave"]?["size"] as? Int) == 2, "Snapshot normalizes filename case")
         let (initialRead, saveResponse) = try await request("/save/config.rpgsave")
         try require(String(decoding: initialRead, as: UTF8.self) == "{}", "On-demand save fetch serves content")
         try require(saveResponse.value(forHTTPHeaderField: "Cache-Control") == "no-store", "Saves never cache")
         try require(saveResponse.value(forHTTPHeaderField: "ETag") == nil, "Saves have no cache validator")
+        // Simulate a provider holding one asset: saves must remain responsive.
+        let blockedURL = root.appendingPathComponent("blocked.bin")
+        try Data("blocked asset".utf8).write(to: blockedURL)
+        let release = DispatchSemaphore(value: 0)
+        await withCheckedContinuation { (ready: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global().async {
+                var error: NSError?
+                NSFileCoordinator().coordinate(writingItemAt: blockedURL, options: .forReplacing, error: &error) { _ in
+                    ready.resume()
+                    _ = release.wait(timeout: .now() + 5)
+                }
+            }
+        }
+        let blockedRequest = Task { try await request("/blocked.bin") }
+        try await Task.sleep(nanoseconds: 150_000_000)
+        let beforeSave = Date()
+        let (responsiveSave, _) = try await request("/save/config.rpgsave")
+        let saveLatency = Date().timeIntervalSince(beforeSave)
+        release.signal()
+        print("Save read during held asset coordination: \(saveLatency)s")
+        _ = try await blockedRequest.value
+        try require(responsiveSave == Data("{}".utf8) && saveLatency < 1,
+                    "Provider coordination must not stall save reads (\(saveLatency)s)")
         let (script, _) = try await request("/js/rpg_managers.js")
         try require(String(decoding: script, as: UTF8.self).contains("window.__emuInstallRuntime"), "Manager hook must execute before main.js")
         try Data("// global save plugin".utf8).write(to: root.appendingPathComponent("js/Drill_CoreOfGlobalSave.js"))
@@ -147,6 +172,14 @@ struct LocalGameServerChecks {
         try Data().write(to: root.appendingPathComponent("empty.bin"))
         let (emptyBody, emptyResponse) = try await request("/empty.bin")
         try require(emptyResponse.statusCode == 200 && emptyBody.isEmpty, "Empty files complete without hanging")
+        // Startup bootstrap remains bounded when many small save slots exist.
+        for i in 100..<106 { try Data(repeating: 65, count: 256 * 1024).write(to: root.appendingPathComponent("save/file\(i).rpgsave")) }
+        try Data(repeating: 66, count: 256 * 1024 + 1).write(to: root.appendingPathComponent("save/plugin_large.rpgsave"))
+        let bounded = try await bootstrap()["startupSaves"] as! [String: String]
+        try require(bounded.values.reduce(0) { $0 + $1.utf8.count } <= 1024 * 1024, "Startup snapshot cap")
+        try require(bounded["config.rpgsave"] == "{}" && bounded["plugin_large.rpgsave"] == nil, "Small plugin/config data take precedence; large files stay lazy")
+        for i in 100..<106 { try fm.removeItem(at: root.appendingPathComponent("save/file\(i).rpgsave")) }
+        try fm.removeItem(at: root.appendingPathComponent("save/plugin_large.rpgsave"))
         let (_, unauthorized) = try await request("/save/file1.rpgsave", method: "PUT", body: "{}")
         try require(unauthorized.statusCode == 409, "Reject writes without a game session")
         let (_, written) = try await request("/save/file1.rpgsave", method: "PUT", body: "{\"name\":\"存档\"}", session: session)

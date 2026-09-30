@@ -18,14 +18,14 @@ test('MPP choice cancel fix preserves disabled rows and permits synthetic cancel
     assert.equal(check.call(window, 0, 3), false);
 });
 
-function environment({saves = {}, namespace = 'game-a', gameTitle = '', journal = new Map(), fetch: fetchImpl} = {}) {
+function environment({saves = {}, startupSaves = {}, namespace = 'game-a', gameTitle = '', journal = new Map(), fetch: fetchImpl} = {}) {
     const logs = [], requests = [], timers = new Map(), events = new Map();
     let sequence = 0;
-    // 新契约：bootstrap 只带元信息（文件名 -> {size}），正文走 GET /save/<name> 按需拉取。
+    // Bootstrap 带元信息和有上限的小存档缓存，其他正文经 GET /save/<name> 按需拉取。
     const savesMeta = Object.fromEntries(
         Object.entries(saves).map(([name, text]) => [name, {size: text.length}]));
     const ctx = {
-        __emuBootstrap: {savesMeta, namespace, gameTitle, session: 'session-a'},
+        __emuBootstrap: {savesMeta, startupSaves, namespace, gameTitle, session: 'session-a'},
         console: {log() {}, warn() {}, error() {}},
         webkit: {messageHandlers: {emuLog: {postMessage(message) { logs.push(message); }}}},
         AbortController,
@@ -784,4 +784,27 @@ test('compatibility monitor slows after readiness, stops while paused/hidden, an
     env.events.get('pagehide').forEach(fn => fn());
     env.events.get('visibilitychange').forEach(fn => fn());
     assert.equal(readyTimers().length, 0);
+});
+
+test('native small-save snapshot lets startup plugins read synchronously even when HTTP is unavailable', () => {
+    const text = '{"globalSwitches":[true]}';
+    const env = environment({saves: {'plugin_globaldata.rpgsave': text}, startupSaves: {'plugin_globaldata.rpgsave': text}});
+    env.ctx.XMLHttpRequest = class { open() {} send() { throw new Error('Timed out'); } };
+    const sm = mv(env);
+    assert.deepEqual(JSON.parse(sm.load('globalData')), {globalSwitches: [true]});
+    assert.equal(env.requests.length, 0);
+    assert.equal(env.ctx.__emuBootstrap.startupSaves, undefined);
+});
+
+test('legacy mixed-case plugin journals remain readable and are cleared only after durable flush', async () => {
+    const text = '{"progress":42}';
+    const oldKey = 'emu.pending.game-a.plugin_GlobalData.rpgsave';
+    const journal = new Map([[oldKey, JSON.stringify(text)]]);
+    const env = environment({journal});
+    const sm = mv(env);
+    assert.equal(sm.load('GlobalData'), text);
+    assert.equal(journal.has(oldKey), true);
+    await tick();
+    assert.equal(journal.size, 0);
+    assert.equal(env.requests[0].url, '/save/plugin_globaldata.rpgsave');
 });
