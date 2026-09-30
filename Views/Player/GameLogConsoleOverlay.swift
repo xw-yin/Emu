@@ -4,6 +4,11 @@ import UIKit
 /// 游戏加载与运行实时日志终端浮层（可在加载黑屏期充当极客进度条，直观排查任何白屏/黑屏/脚本错误）
 struct GameLogConsoleOverlay: View {
     @ObservedObject var logManager = GameLogManager.shared
+    @State private var browsingHistory = false
+    @State private var copyingLogs = false
+    @State private var copyError: String?
+    @State private var scrollToLatestPage = true
+
     
     var body: some View {
         GeometryReader { geometry in
@@ -20,7 +25,7 @@ struct GameLogConsoleOverlay: View {
                         HStack(spacing: 5) {
                             Image(systemName: "terminal.fill")
                                 .font(.system(size: 11, weight: .bold))
-                            Text("日志 \(logManager.loadedCount)")
+                            Text("日志 \(logManager.count(for: nil))")
                                 .font(.system(size: 11, weight: .bold, design: .monospaced))
                             if logManager.errorCount > 0 {
                                 Circle()
@@ -63,7 +68,14 @@ struct GameLogConsoleOverlay: View {
                                 filterButton("错误", level: .error)
 
                                 Button {
-                                    UIPasteboard.general.string = logManager.filteredText
+                                    copyingLogs = true
+                                    logManager.exportLogs { result in
+                                        copyingLogs = false
+                                        switch result {
+                                        case .success(let text): UIPasteboard.general.string = text
+                                        case .failure(let error): copyError = error.localizedDescription
+                                        }
+                                    }
                                     HapticManager.shared.buttonPress()
                                 } label: {
                                     Image(systemName: "doc.on.doc.fill")
@@ -72,9 +84,11 @@ struct GameLogConsoleOverlay: View {
                                         .frame(width: 16, height: 16)
                                         .background(Color.white.opacity(0.8), in: Circle())
                                 }
-                                .accessibilityLabel("复制当前筛选日志")
+                                .disabled(copyingLogs)
+                                .accessibilityLabel("复制当前筛选的完整日志")
 
                                 Button {
+                                    browsingHistory = false
                                     logManager.followsLatest.toggle()
                                 } label: {
                                     Image(systemName: logManager.followsLatest ? "arrow.down.to.line.circle.fill" : "arrow.down.to.line.circle")
@@ -120,6 +134,22 @@ struct GameLogConsoleOverlay: View {
                         ScrollViewReader { scrollProxy in
                             ScrollView(.vertical, showsIndicators: true) {
                                 LazyVStack(alignment: .leading, spacing: 4) {
+                                    if let error = logManager.storageError {
+                                        Text("日志保存失败：\(error)").foregroundStyle(.red)
+                                    }
+                                    if logManager.hasOlderLogs {
+                                        Button {
+                                            loadOlder(using: scrollProxy)
+                                        } label: {
+                                            Text(logManager.isLoadingHistory ? "正在加载…" : "加载更早日志")
+                                                .font(.system(size: 11))
+                                        }
+                                        .disabled(logManager.isLoadingHistory)
+                                        .background(GeometryReader { proxy in
+                                            Color.clear.preference(key: LogHistoryPosition.self,
+                                                value: proxy.frame(in: .named("logScroll")).minY)
+                                        })
+                                    }
                                     if logManager.visibleLogs.isEmpty {
                                         Text(logManager.selectedLevel == nil ? "暂无日志" : "当前分类暂无日志")
                                             .foregroundStyle(.secondary)
@@ -151,11 +181,34 @@ struct GameLogConsoleOverlay: View {
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 8)
                             }
-                            .onChange(of: logManager.logs.last?.id) { _ in
-                                if logManager.followsLatest, let last = logManager.visibleLogs.last {
+                            .coordinateSpace(name: "logScroll")
+                            .simultaneousGesture(DragGesture().onChanged { _ in
+                                browsingHistory = true
+                                scrollToLatestPage = false
+                                logManager.followsLatest = false
+                            })
+                            .onPreferenceChange(LogHistoryPosition.self) { position in
+                                if browsingHistory, position >= 0, position < 260 {
+                                    loadOlder(using: scrollProxy)
+                                }
+                            }
+                            .onAppear {
+                                scrollToLatestPage = true
+                                if let last = logManager.visibleLogs.last { scrollProxy.scrollTo(last.id, anchor: .bottom) }
+                            }
+                            .onChange(of: logManager.followsLatest) { _, following in
+                                if following, let last = logManager.visibleLogs.last { scrollProxy.scrollTo(last.id, anchor: .bottom) }
+                            }
+                            .onChange(of: logManager.selectedLevel) {
+                                browsingHistory = false
+                                scrollToLatestPage = true
+                            }
+                            .onChange(of: logManager.logs.last?.id) {
+                                if logManager.followsLatest || scrollToLatestPage, let last = logManager.visibleLogs.last {
                                     withAnimation(.easeOut(duration: 0.1)) {
                                         scrollProxy.scrollTo(last.id, anchor: .bottom)
                                     }
+                                    scrollToLatestPage = false
                                 }
                             }
                         }
@@ -181,8 +234,23 @@ struct GameLogConsoleOverlay: View {
             }
         }
         .allowsHitTesting(true)
+        .alert("复制日志失败", isPresented: Binding(get: { copyError != nil }, set: { if !$0 { copyError = nil } })) {
+            Button("确定") { copyError = nil }
+        } message: { Text(copyError ?? "") }
         }
     }
+    private func loadOlder(using proxy: ScrollViewProxy) {
+        guard logManager.hasOlderLogs, !logManager.isLoadingHistory else { return }
+        let anchor = logManager.visibleLogs.first?.id
+        browsingHistory = false
+        scrollToLatestPage = false
+        logManager.loadOlder {
+            DispatchQueue.main.async {
+                if let anchor { proxy.scrollTo(anchor, anchor: .top) }
+            }
+        }
+    }
+
     private func filterButton(_ title: String, level: GameLogManager.LogItem.Level?) -> some View {
         Button {
             logManager.selectedLevel = level
@@ -200,4 +268,9 @@ struct GameLogConsoleOverlay: View {
         .accessibilityValue(logManager.selectedLevel == level ? "已选中" : "未选中")
     }
 
+}
+
+private struct LogHistoryPosition: PreferenceKey {
+    static var defaultValue: CGFloat = -1000
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }

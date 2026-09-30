@@ -83,8 +83,12 @@ holds, cancellation, modifiers and the registered letter/digit/function keys.
 On device, also check simultaneous direction + action, sliding between directions,
 background/resume, hiding controls and opening the key editor while holding a key.
 Use the toolbar log button after startup: select/copy a line, copy all, and toggle
-follow-latest while new logs arrive. Startup logs (up to 2,000 entries) are retained
-separately from the rolling 2,000 runtime entries for the current game session.
+follow-latest while new logs arrive. The current game session keeps every log in a disk journal. Counts include
+unloaded history; the console initially decodes the latest 200 matching entries
+and loads earlier pages when scrolling upward. Dragging disables follow-latest
+so incoming logs do not move the history being inspected. Copy reads the entire
+selected history on the archive queue, including unloaded pages. A new game
+session clears the previous journal; history does not persist across app launches.
 Toggle keep-awake, background the app, and exit to confirm idle-timer restoration.
 
 Open the affected game, reach the title, load an existing PC save, make a new save,
@@ -111,7 +115,8 @@ range/HEAD/empty-file framing, conditional static-resource caching, changed-file
 invalidation and session isolation. Saves remain `no-store`. Static assets require
 ETag revalidation because different games reuse the same loopback origin.
 Library checks cover persistent IDs, unchanged refreshes and stale removal scans.
-Log checks cover one publication per batch, concurrent producers and reset isolation.
+Log checks cover one publication per batch, concurrent producers, full counts
+beyond 2,000 entries, page identity/order, complete export and reset isolation.
 Runtime checks verify 100 ms startup / 1 s post-readiness compatibility checks,
 pause/visibility suspension, resumed installation and late plugin replacements.
 Thumbnail loading uses coordinated ImageIO downsampling on a serial worker with a
