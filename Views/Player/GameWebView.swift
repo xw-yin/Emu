@@ -164,6 +164,7 @@ struct GameWebView: UIViewRepresentable {
         // Keep our own Swift array. WebKit's userScripts getter may bridge its
         // mutable backing array; re-adding while iterating that view grows it forever.
         context.coordinator.baseScripts = [vorbisScript, audioScript, unlockScript]
+        context.coordinator.webView = webView
         do {
             guard let runtimeURL = Bundle.main.url(forResource: "GameRuntime", withExtension: "js") else {
                 throw CocoaError(.fileNoSuchFile)
@@ -179,11 +180,13 @@ struct GameWebView: UIViewRepresentable {
     
     func updateUIView(_ uiView: WKWebView, context: Context) {
         context.coordinator.parent = self
+        context.coordinator.webView = uiView
     }
     
     static func dismantleUIView(_ uiView: WKWebView, coordinator: Coordinator) {
         coordinator.isActive = false
         coordinator.hideWorkItem?.cancel()
+        NotificationCenter.default.removeObserver(coordinator)
         uiView.stopLoading()
         uiView.navigationDelegate = nil
         uiView.configuration.userContentController.removeScriptMessageHandler(forName: "emuLog")
@@ -195,6 +198,7 @@ struct GameWebView: UIViewRepresentable {
     
     final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         var parent: GameWebView
+        weak var webView: WKWebView?
         var isActive = true
         var hideWorkItem: DispatchWorkItem?
         var baseScripts: [WKUserScript] = []
@@ -203,6 +207,23 @@ struct GameWebView: UIViewRepresentable {
         
         init(_ parent: GameWebView) {
             self.parent = parent
+            super.init()
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(handleMemoryWarning),
+                name: UIApplication.didReceiveMemoryWarningNotification,
+                object: nil
+            )
+        }
+        
+        deinit {
+            NotificationCenter.default.removeObserver(self)
+        }
+        
+        @objc private func handleMemoryWarning() {
+            guard isActive else { return }
+            GameLogManager.shared.log("⚠️ 收到系统内存吃紧警告，已触发紧急显存与材质回收", level: .warning)
+            webView?.evaluateJavaScript("window.__emuPurgeMemory?.(true)", completionHandler: nil)
         }
         
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {

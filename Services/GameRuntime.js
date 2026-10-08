@@ -612,9 +612,216 @@
         }
         return result;
     }
+
+    // MARK: - 深度显存与内存优化引擎 (iOS WebKit VRAM & Memory Guard)
+    let memoryOptimizerInstalled = false;
+    let lastPurgeAt = 0;
+
+    function destroyBitmapResource(bitmap) {
+        if (!bitmap) return;
+        try {
+            // 1. 释放 WebGL GPU 纹理显存 (BaseTexture)
+            const baseTexture = bitmap._baseTexture;
+            if (baseTexture) {
+                if (window.PIXI) {
+                    if (window.PIXI.utils?.BaseTextureCache) {
+                        delete window.PIXI.utils.BaseTextureCache[baseTexture.imageUrl];
+                        delete window.PIXI.utils.BaseTextureCache[baseTexture.id];
+                    }
+                    if (window.PIXI.Texture?.removeFromCache) {
+                        try { window.PIXI.Texture.removeFromCache(baseTexture); } catch (_) {}
+                    }
+                }
+                if (typeof baseTexture.destroy === 'function') {
+                    baseTexture.destroy(true); // true = 彻底从 GPU VRAM 中销毁 GLTexture
+                }
+                bitmap._baseTexture = null;
+            }
+            // 2. 释放 HTML5 Canvas 的 CoreAnimation 内存后备存储 (Backing Store)
+            // 将宽高缩小至 1x1，强制 WebKit 立即释放 2048x2048 等巨型位图占用的 16MB+ 脏内存
+            if (bitmap._canvas) {
+                bitmap._canvas.width = 1;
+                bitmap._canvas.height = 1;
+                bitmap._context = null;
+                bitmap._canvas = null;
+            }
+            // 3. 释放 HTMLImageElement 并吊销 Blob URL
+            if (bitmap._image) {
+                const src = bitmap._image.src;
+                if (src && src.startsWith('blob:')) {
+                    try { URL.revokeObjectURL(src); } catch (_) {}
+                }
+                bitmap._image.src = '';
+                bitmap._image.onload = null;
+                bitmap._image.onerror = null;
+                bitmap._image = null;
+            }
+            // 4. MZ 引擎 Bitmap 自带销毁方法
+            if (typeof bitmap.destroy === 'function' && !bitmap._isDestroyed) {
+                bitmap.destroy();
+            }
+        } catch (e) {
+            console.warn('[Emu Memory] 释放 Bitmap 显存异常: ', e);
+        }
+    }
+
+    function purgeTransientImages(urgent = false) {
+        const now = Date.now();
+        if (!urgent && now - lastPurgeAt < 500) return;
+        lastPurgeAt = now;
+
+        let purgedCount = 0;
+        let freedPixelEst = 0;
+
+        // 识别可以安全换出的临时场景素材 (严格保留核心系统 Window/Icon 等 UI)
+        const isTransientKey = (key) => {
+            if (!key || typeof key !== 'string') return false;
+            if (key.includes('/system/') || key.includes('system/')) return false;
+            if (urgent) return true;
+            return key.includes('/tilesets/') || key.includes('tilesets/') ||
+                   key.includes('/parallaxes/') || key.includes('parallaxes/') ||
+                   key.includes('/battlebacks1/') || key.includes('battlebacks1/') ||
+                   key.includes('/battlebacks2/') || key.includes('battlebacks2/') ||
+                   key.includes('/animations/') || key.includes('animations/') ||
+                   key.includes('/titles1/') || key.includes('titles1/') ||
+                   key.includes('/titles2/') || key.includes('titles2/') ||
+                   key.includes('/pictures/') || key.includes('pictures/');
+        };
+
+        // 1. MV 缓存: ImageManager._imageCache._items
+        const imageCacheItems = window.ImageManager?._imageCache?._items;
+        if (imageCacheItems && typeof imageCacheItems === 'object') {
+            for (const key of Object.keys(imageCacheItems)) {
+                if (isTransientKey(key)) {
+                    const item = imageCacheItems[key];
+                    const bitmap = item?.bitmap;
+                    if (bitmap) {
+                        freedPixelEst += (bitmap.width || 0) * (bitmap.height || 0);
+                        destroyBitmapResource(bitmap);
+                        purgedCount++;
+                    }
+                    delete imageCacheItems[key];
+                }
+            }
+        }
+
+        // 2. MZ / 简易版 MV 缓存: ImageManager._cache
+        const directCache = window.ImageManager?._cache;
+        if (directCache && typeof directCache === 'object') {
+            for (const key of Object.keys(directCache)) {
+                if (isTransientKey(key)) {
+                    const bitmap = directCache[key];
+                    if (bitmap) {
+                        freedPixelEst += (bitmap.width || 0) * (bitmap.height || 0);
+                        destroyBitmapResource(bitmap);
+                        purgedCount++;
+                    }
+                    delete directCache[key];
+                }
+            }
+        }
+
+        // 3. 触发 PIXI 纹理垃圾收集 (Texture GC)
+        const renderer = window.Graphics?._renderer;
+        if (renderer?.textureGC && typeof renderer.textureGC.run === 'function') {
+            try { renderer.textureGC.run(); } catch (_) {}
+        }
+
+        if (purgedCount > 0) {
+            const freedMB = Math.round(freedPixelEst * 4 / 1048576);
+            log('info', `[显存管理] 场景切换已主动释放 ${purgedCount} 个多余场景纹理 (预估释放 ~${freedMB}MB 显存)`);
+        }
+    }
+
+    window.__emuPurgeMemory = (urgent = false) => {
+        log('warning', `[显存管理] 收到内存控制指令 (${urgent ? '紧急' : '常规'})，开始深度清理...`);
+        purgeTransientImages(urgent);
+    };
+
+    function installMemoryOptimizer() {
+        if (memoryOptimizerInstalled || !window.SceneManager) return;
+        memoryOptimizerInstalled = true;
+
+        // 1. 场景结束切换边界 (例如从地图切到战斗、或进出菜单)
+        wrap(window.SceneManager, 'onSceneTerminate', original => function (...args) {
+            const result = original.apply(this, args);
+            purgeTransientImages(false);
+            return result;
+        });
+
+        // 2. 玩家在同一地图场景下传送进入新地图 (地图间转移)
+        wrap(window.Game_Player?.prototype, 'performTransfer', original => function (...args) {
+            if (this.isTransferring() && this._newMapId !== window.$gameMap?.mapId()) {
+                purgeTransientImages(false);
+            }
+            return original.apply(this, args);
+        });
+
+        // 3. 限制 MV ImageCache 移动端上限 (防止插件设置无上限导致爆显存)
+        if (window.ImageCache && window.ImageCache.prototype) {
+            wrap(window.ImageCache.prototype, 'initialize', original => function (...args) {
+                original.apply(this, args);
+                this._limit = 12 * 1000 * 1000; // 限制为 12MP 像素 (约 48MB)
+            });
+            wrap(window.ImageCache.prototype, '_truncateCache', original => function (...args) {
+                const items = this._items;
+                const keys = Object.keys(items || {});
+                let totalPixels = 0;
+                for (const k of keys) {
+                    const bm = items[k]?.bitmap;
+                    if (bm) totalPixels += (bm.width || 0) * (bm.height || 0);
+                }
+                if (totalPixels > this._limit) {
+                    for (const k of keys) {
+                        if (!k.includes('/system/') && !k.includes('system/')) {
+                            const item = items[k];
+                            if (item?.bitmap) destroyBitmapResource(item.bitmap);
+                            delete items[k];
+                            totalPixels -= (item?.bitmap?.width || 0) * (item?.bitmap?.height || 0);
+                            if (totalPixels <= this._limit) break;
+                        }
+                    }
+                }
+                return original.apply(this, args);
+            });
+        }
+
+        // 4. 修复 Decrypter 解密后的 ObjectURL 泄露
+        if (window.Decrypter && typeof window.Decrypter.decryptImg === 'function') {
+            wrap(window.Decrypter, 'decryptImg', original => function (url, bitmap) {
+                original.call(this, url, bitmap);
+                if (bitmap && bitmap._image) {
+                    const img = bitmap._image;
+                    const cleanupBlob = () => {
+                        if (img.src && img.src.startsWith('blob:')) {
+                            try { URL.revokeObjectURL(img.src); } catch (_) {}
+                        }
+                    };
+                    img.addEventListener('load', cleanupBlob, { once: true });
+                    img.addEventListener('error', cleanupBlob, { once: true });
+                }
+            });
+        }
+
+        // 5. 监听 WebGL 丢失与恢复，防止渲染器崩溃
+        const canvas = window.Graphics?._canvas || (typeof document?.querySelector === 'function' ? document.querySelector('canvas') : null);
+        if (canvas && typeof canvas.addEventListener === 'function' && !canvas.__emuContextListenerAdded) {
+            canvas.__emuContextListenerAdded = true;
+            canvas.addEventListener('webglcontextlost', (e) => {
+                e.preventDefault();
+                log('warning', '[显存管理] WebGL 上下文发生显存降级保护，正在启动恢复...');
+                purgeTransientImages(true);
+            }, false);
+            canvas.addEventListener('webglcontextrestored', () => {
+                log('info', '[显存管理] WebGL 上下文已成功恢复');
+            }, false);
+        }
+    }
+
     function install() {
         installStorage();
         installViewport();
+        installMemoryOptimizer();
         const manager = window.SceneManager;
         // MV's stock scheduler does not retain its RAF handle. A hidden WKWebView
         // can retain the old callback, then resume() adds a second endless loop.
@@ -752,6 +959,7 @@
             return original.apply(this, args);
         });
         wrap(window.DataManager, 'loadMapData', original => function (id) {
+            purgeTransientImages(false);
             log('info', '开始加载地图: ' + id);
             return original.call(this, id);
         });
