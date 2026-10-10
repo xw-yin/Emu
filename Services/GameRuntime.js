@@ -617,54 +617,8 @@
     let memoryOptimizerInstalled = false;
     let lastPurgeAt = 0;
 
-    function destroyBitmapResource(bitmap) {
-        if (!bitmap) return;
-        try {
-            // 1. 释放 WebGL GPU 纹理显存 (BaseTexture)
-            const baseTexture = bitmap._baseTexture;
-            if (baseTexture) {
-                if (window.PIXI) {
-                    if (window.PIXI.utils?.BaseTextureCache) {
-                        delete window.PIXI.utils.BaseTextureCache[baseTexture.imageUrl];
-                        delete window.PIXI.utils.BaseTextureCache[baseTexture.id];
-                    }
-                    if (window.PIXI.Texture?.removeFromCache) {
-                        try { window.PIXI.Texture.removeFromCache(baseTexture); } catch (_) {}
-                    }
-                }
-                if (typeof baseTexture.destroy === 'function') {
-                    baseTexture.destroy(true); // true = 彻底从 GPU VRAM 中销毁 GLTexture
-                }
-                bitmap._baseTexture = null;
-            }
-            // 2. 释放 HTML5 Canvas 的 CoreAnimation 内存后备存储 (Backing Store)
-            // 将宽高缩小至 1x1，强制 WebKit 立即释放 2048x2048 等巨型位图占用的 16MB+ 脏内存
-            if (bitmap._canvas) {
-                bitmap._canvas.width = 1;
-                bitmap._canvas.height = 1;
-                bitmap._context = null;
-                bitmap._canvas = null;
-            }
-            // 3. 释放 HTMLImageElement 并吊销 Blob URL
-            if (bitmap._image) {
-                const src = bitmap._image.src;
-                if (src && src.startsWith('blob:')) {
-                    try { URL.revokeObjectURL(src); } catch (_) {}
-                }
-                bitmap._image.src = '';
-                bitmap._image.onload = null;
-                bitmap._image.onerror = null;
-                bitmap._image = null;
-            }
-            // 4. MZ 引擎 Bitmap 自带销毁方法
-            if (typeof bitmap.destroy === 'function' && !bitmap._isDestroyed) {
-                bitmap.destroy();
-            }
-        } catch (e) {
-            console.warn('[Emu Memory] 释放 Bitmap 显存异常: ', e);
-        }
-    }
-
+    // Cache eviction releases only our references; Bitmap internals may be
+    // getter-only and textures can still be shared with live sprites.
     function purgeTransientImages(urgent = false) {
         const now = Date.now();
         if (!urgent && now - lastPurgeAt < 500) return;
@@ -695,9 +649,9 @@
                 if (isTransientKey(key)) {
                     const item = imageCacheItems[key];
                     const bitmap = item?.bitmap;
+                    if (item?.reservationId || (bitmap?.isReady && !bitmap.isReady())) continue;
                     if (bitmap) {
                         freedPixelEst += (bitmap.width || 0) * (bitmap.height || 0);
-                        destroyBitmapResource(bitmap);
                         purgedCount++;
                     }
                     delete imageCacheItems[key];
@@ -711,9 +665,11 @@
             for (const key of Object.keys(directCache)) {
                 if (isTransientKey(key)) {
                     const bitmap = directCache[key];
+                    // Older MV uses a CacheMap here, not a Bitmap dictionary.
+                    // Do not remove its bookkeeping fields during urgent purge.
+                    if (typeof bitmap?.isReady !== 'function' || !bitmap.isReady()) continue;
                     if (bitmap) {
                         freedPixelEst += (bitmap.width || 0) * (bitmap.height || 0);
-                        destroyBitmapResource(bitmap);
                         purgedCount++;
                     }
                     delete directCache[key];
@@ -729,7 +685,7 @@
 
         if (purgedCount > 0) {
             const freedMB = Math.round(freedPixelEst * 4 / 1048576);
-            log('info', `[显存管理] 场景切换已主动释放 ${purgedCount} 个多余场景纹理 (预估释放 ~${freedMB}MB 显存)`);
+            log('info', `[显存管理] 已移除 ${purgedCount} 个缓存引用 (像素估算 ~${freedMB}MB；仍被场景引用的资源保留，实际释放由引擎回收)`);
         }
     }
 
@@ -757,33 +713,10 @@
             return original.apply(this, args);
         });
 
-        // 3. 限制 MV ImageCache 移动端上限 (防止插件设置无上限导致爆显存)
-        if (window.ImageCache && window.ImageCache.prototype) {
-            wrap(window.ImageCache.prototype, 'initialize', original => function (...args) {
-                original.apply(this, args);
-                this._limit = 12 * 1000 * 1000; // 限制为 12MP 像素 (约 48MB)
-            });
-            wrap(window.ImageCache.prototype, '_truncateCache', original => function (...args) {
-                const items = this._items;
-                const keys = Object.keys(items || {});
-                let totalPixels = 0;
-                for (const k of keys) {
-                    const bm = items[k]?.bitmap;
-                    if (bm) totalPixels += (bm.width || 0) * (bm.height || 0);
-                }
-                if (totalPixels > this._limit) {
-                    for (const k of keys) {
-                        if (!k.includes('/system/') && !k.includes('system/')) {
-                            const item = items[k];
-                            if (item?.bitmap) destroyBitmapResource(item.bitmap);
-                            delete items[k];
-                            totalPixels -= (item?.bitmap?.width || 0) * (item?.bitmap?.height || 0);
-                            if (totalPixels <= this._limit) break;
-                        }
-                    }
-                }
-                return original.apply(this, args);
-            });
+        // Keep the engine's LRU and reservation rules. Never destroy a bitmap
+        // merely because its cache entry was evicted: live sprites may own it.
+        if (window.ImageCache && typeof window.ImageCache.limit === 'number') {
+            window.ImageCache.limit = Math.min(window.ImageCache.limit, 12 * 1000 * 1000);
         }
 
         // 4. 修复 Decrypter 解密后的 ObjectURL 泄露

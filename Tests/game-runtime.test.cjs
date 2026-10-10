@@ -88,6 +88,37 @@ function mv(env) {
     return env.ctx.StorageManager;
 }
 
+test('memory purge evicts references without mutating readonly or shared Bitmap resources', () => {
+    const env = environment();
+    let destroyed = 0;
+    const texture = {destroy() { destroyed++; }};
+    const canvas = {width: 1024, height: 1024};
+    const bitmap = Object.freeze({width: 1024, height: 1024,
+        get _baseTexture() { return texture; }, get _canvas() { return canvas; },
+        isReady: () => true, destroy() { destroyed++; }});
+    const loading = {isReady: () => false};
+    const items = {
+        'img/pictures/active.png': {bitmap},
+        'img/pictures/reserved.png': {bitmap, reservationId: 'scene'},
+        'img/pictures/loading.png': {bitmap: loading},
+        'img/system/Window.png': {bitmap}
+    };
+    const metadata = {};
+    env.ctx.ImageManager = {_imageCache: {_items: items}, _cache: {'img/pictures/shared.png': bitmap, _inner: metadata}};
+    env.ctx.__emuPurgeMemory(true);
+    assert.equal(items['img/pictures/active.png'], undefined);
+    assert.equal(env.ctx.ImageManager._cache['img/pictures/shared.png'], undefined);
+    assert.equal(env.ctx.ImageManager._cache._inner, metadata);
+    assert.equal(items['img/pictures/reserved.png'].bitmap, bitmap);
+    assert.equal(items['img/pictures/loading.png'].bitmap, loading);
+    assert.equal(items['img/system/Window.png'].bitmap, bitmap);
+    assert.equal(destroyed, 0);
+    assert.equal(bitmap._baseTexture, texture);
+    assert.equal(canvas.width, 1024);
+    assert.equal(canvas.height, 1024);
+    assert.ok(env.logs.some(log => log.message.includes('实际释放由引擎回收')));
+});
+
 test('legacy Drill EMS restores missing save fields and first-page locks without resetting existing state', () => {
     const env = environment();
     env.ctx.Game_Event = function () {};
