@@ -87,6 +87,43 @@ function mv(env) {
     env.ctx.__emuInstallRuntime();
     return env.ctx.StorageManager;
 }
+
+test('legacy Drill EMS restores missing save fields and first-page locks without resetting existing state', () => {
+    const env = environment();
+    env.ctx.Game_Event = function () {};
+    env.ctx.Game_Event.prototype.drill_EMS_setupMutiSwitch = function () {
+        if (!this._erased && this._drill_EMS_isFirstBirth) {
+            this._drill_EMS_isFirstBirth = false;
+            this._drill_EMS.locks.firstPage = {num: 4};
+        }
+        this._drill_EMS.keys = {};
+        if (!this._erased) this._drill_EMS.keys.currentPage = true;
+        return 'original result';
+    };
+    const event = Object.create(env.ctx.Game_Event.prototype);
+    event._eventId = 3;
+    event._mapId = 7;
+    assert.throws(() => event.drill_EMS_setupMutiSwitch(), TypeError);
+    env.ctx.__emuInstallRuntime();
+    assert.equal(event.drill_EMS_setupMutiSwitch(), 'original result');
+    assert.equal(event._drill_EMS.locks.firstPage.num, 4);
+    assert.equal(event._drill_EMS.keys.currentPage, true);
+    event._drill_EMS.locks.firstPage.num = 9;
+    const state = event._drill_EMS;
+    event.drill_EMS_setupMutiSwitch();
+    assert.equal(event._drill_EMS, state);
+    assert.equal(state.locks.firstPage.num, 9);
+    assert.equal(env.logs.filter(log => log.message.includes('计数开关')).length, 1);
+    const erased = Object.create(env.ctx.Game_Event.prototype);
+    erased._erased = true;
+    erased.drill_EMS_setupMutiSwitch();
+    assert.equal(Object.keys(erased._drill_EMS.keys).length, 0);
+    assert.equal(Object.keys(erased._drill_EMS.locks).length, 0);
+    assert.equal(env.requests.length, 0);
+    env.ctx.Game_Event.prototype.drill_EMS_setupMutiSwitch = () => { throw new Error('unrelated plugin failure'); };
+    env.ctx.__emuInstallRuntime();
+    assert.throws(() => event.drill_EMS_setupMutiSwitch(), /unrelated plugin failure/);
+});
 function mz(env) {
     env.ctx.StorageManager = {loadZip() {}, saveZip() {}, loadObject(name) { return this.loadZip(name).then(JSON.parse); }, saveObject(name, object) { return this.saveZip(name, JSON.stringify(object)); }};
     env.ctx.__emuInstallRuntime();

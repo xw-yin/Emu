@@ -819,6 +819,20 @@
     }
 
     function install() {
+        wrap(window.Game_Event?.prototype, 'drill_EMS_setupMutiSwitch', original => function (...args) {
+            // Legacy Drill EMS initializes only in the constructor, which JsonEx
+            // does not rerun when restoring events from older saves.
+            if (this._drill_EMS == null) this._drill_EMS = {};
+            if (this._drill_EMS.keys == null) this._drill_EMS.keys = {};
+            if (this._drill_EMS.locks == null) {
+                this._drill_EMS.locks = {};
+                // Locks persist across pages: restore their first-page comments
+                // before the plugin reads the currently active page.
+                this._drill_EMS_isFirstBirth = true;
+                log('warning', '已补齐旧存档计数开关数据，地图: ' + this._mapId + '，事件: ' + this._eventId);
+            }
+            return original.apply(this, args);
+        });
         installStorage();
         installViewport();
         installMemoryOptimizer();

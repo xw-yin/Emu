@@ -118,6 +118,13 @@ struct LocalGameServerChecks {
         try Data("// global save plugin".utf8).write(to: root.appendingPathComponent("js/Drill_CoreOfGlobalSave.js"))
         let (drill, _) = try await request("/js/Drill_CoreOfGlobalSave.js")
         try require(String(decoding: drill, as: UTF8.self).contains("window.__emuInstallRuntime"), "Drill bridge before title plugins")
+        let emsSource = "// legacy EMS plugin"
+        let emsURL = root.appendingPathComponent("js/Drill_EventMutiSwitch.js")
+        try Data(emsSource.utf8).write(to: emsURL)
+        let (ems, _) = try await request("/js/Drill_EventMutiSwitch.js")
+        try require(String(decoding: ems, as: UTF8.self).contains("window.__emuInstallRuntime"), "EMS compatibility installs before event refresh")
+        let originalEMS = try String(contentsOf: emsURL, encoding: .utf8)
+        try require(originalEMS == emsSource, "EMS adapter must not edit game files")
         let glowSource = "DrillUp.g_DCOG_shadowColorIndex = Number(DrillUp.parameters[\"默认外发光颜色ID(全局)\"] || 1);\nif( color_index == 0 ){ color_index = 11; }"
         try Data(glowSource.utf8).write(to: root.appendingPathComponent("js/Drill_DialogCharOuterGlow.js"))
         let (glow, _) = try await request("/js/Drill_DialogCharOuterGlow.js")

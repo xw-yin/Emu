@@ -691,7 +691,7 @@ final class LocalGameServer: ObservableObject {
             sendResponse(connection: connection, statusCode: 304, headers: cacheHeaders, body: Data())
             return
         }
-        let adaptedNames = ["rpg_managers.js", "rmmz_managers.js", "drill_coreofglobalsave.js",
+        let adaptedNames = ["rpg_managers.js", "rmmz_managers.js", "drill_coreofglobalsave.js", "drill_eventmutiswitch.js",
                             "drill_dialogcharouterglow.js", "mpp_choiceex.js", "drill_titletiledgif.js"]
         let needsAdapter = adaptedNames.contains(targetFileURL.lastPathComponent.lowercased())
         var fileData = Data()
@@ -704,7 +704,7 @@ final class LocalGameServer: ObservableObject {
         }
 
         // Install synchronously after the managers are defined, before plugins/main.
-        if ["rpg_managers.js", "rmmz_managers.js", "drill_coreofglobalsave.js"].contains(targetFileURL.lastPathComponent.lowercased()) {
+        if ["rpg_managers.js", "rmmz_managers.js", "drill_coreofglobalsave.js", "drill_eventmutiswitch.js"].contains(targetFileURL.lastPathComponent.lowercased()) {
             fileData.append(Data("\n;window.__emuInstallRuntime && window.__emuInstallRuntime();\n".utf8))
         }
 
