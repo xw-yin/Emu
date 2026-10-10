@@ -15,7 +15,7 @@ struct VirtualControllerOverlay: View {
     @AppStorage("gameOrientation") private var gameOrientation = "auto"
     
     @Environment(\.scenePhase) private var scenePhase
-    @AppStorage("keepScreenAwake") private var keepScreenAwake = true
+    @Binding var keepScreenAwake: Bool
     @State private var profile: GameKeyProfile = .actionRPG
     @State private var controllerOpacity: Double = 0.85
     @State private var showKeymapSheet: Bool = false

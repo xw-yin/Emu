@@ -9,6 +9,7 @@ struct GamePlayerView: View {
     let onDismiss: () -> Void
     let onClose: () -> Void
     @State private var hasLaunched = false
+    @State private var awakeOwner = UUID()
     @State private var isClosing = false
     @AppStorage("showPerformanceMonitor") private var showPerformanceMonitor = false
     
@@ -31,7 +32,7 @@ struct GamePlayerView: View {
                 
                 // 次层：流体玻璃虚拟控制器浮层
                 VirtualControllerOverlay(gameTitle: game.title, webView: webView,
-                    onExitGame: onDismiss, onCloseGame: exitGame)
+                    onExitGame: onDismiss, onCloseGame: exitGame, keepScreenAwake: $keepScreenAwake)
             } else if let error = errorMessage {
                 VStack(spacing: 16) {
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -93,8 +94,10 @@ struct GamePlayerView: View {
             DispatchQueue.main.async { updatePresentation() }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
-            UIApplication.shared.isIdleTimerDisabled = false
             webView?.evaluateJavaScript("window.__emuSetPaused?.(true)", completionHandler: nil)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
+            ScreenAwakeController.shared.refresh()
         }
         .statusBarHidden(isPresented)
     }
@@ -128,7 +131,8 @@ struct GamePlayerView: View {
     }
 
     private func updateIdleTimer() {
-        UIApplication.shared.isIdleTimerDisabled = !didCleanup && isPresented && keepScreenAwake && UIApplication.shared.applicationState == .active
+        ScreenAwakeController.shared.update(owner: awakeOwner,
+            enabled: !didCleanup && isPresented && keepScreenAwake)
     }
 
     private func updatePresentation() {
@@ -155,7 +159,7 @@ struct GamePlayerView: View {
         OrientationDelegate.apply("auto")
         LocalGameServer.shared.stop()
         GameLibraryManager.shared.releaseGameAccess()
-        UIApplication.shared.isIdleTimerDisabled = false
+        ScreenAwakeController.shared.update(owner: awakeOwner, enabled: false)
     }
 }
 
