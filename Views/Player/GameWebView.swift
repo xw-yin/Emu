@@ -31,6 +31,7 @@ struct GameWebView: UIViewRepresentable {
     let url: URL
     @Binding var webView: WKWebView?
     var isGameVisible = true
+    @Binding var processTerminated: Bool
     
     func makeUIView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
@@ -216,7 +217,7 @@ struct GameWebView: UIViewRepresentable {
         private var lastPaused: Bool?
 
         func syncPlayback(force: Bool = false) {
-            guard isActive, let webView = webView else { return }
+            guard isActive, !parent.processTerminated, let webView = webView else { return }
             let active = webView.window?.windowScene?.activationState == .foregroundActive
             let paused = !parent.isGameVisible || !active
             guard force || lastPaused != paused else { return }
@@ -372,26 +373,14 @@ struct GameWebView: UIViewRepresentable {
             syncPlayback(force: true)
         }
         
-        private var terminateCount = 0
-        private var lastTerminateAt = Date.distantPast
-
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            guard isActive else { return }
             hideWorkItem?.cancel()
+            lastPaused = nil
+            parent.processTerminated = true
             GameLogManager.shared.isVisible = true
             GameLogManager.shared.isGameReady = false
-            // 有界自动恢复：60 秒窗口内最多自动重载 3 次（每次重载都会重新走
-            // 导航注入，存档以磁盘为准；空中未落盘的写入可能丢失，属小概率窗口）。
-            // 超过阈值则停手，避免在持续 OOM 的机器上无限转圈。
-            let now = Date()
-            if now.timeIntervalSince(lastTerminateAt) > 60 { terminateCount = 0 }
-            lastTerminateAt = now
-            terminateCount += 1
-            if terminateCount <= 3 {
-                GameLogManager.shared.log("WebKit 进程被系统回收，正在自动恢复（第 \(terminateCount) 次）…", level: .warning)
-                webView.reload()
-            } else {
-                GameLogManager.shared.log("WebKit 游戏进程已终止，请重新打开游戏", level: .error)
-            }
+            GameLogManager.shared.log("WebKit 游戏进程已终止，已停止自动重载。此回调不提供终止原因；请结合此前的内存警告排查。未保存进度无法从已终止的进程恢复。", level: .error)
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {

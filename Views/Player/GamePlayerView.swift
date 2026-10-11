@@ -11,6 +11,7 @@ struct GamePlayerView: View {
     @State private var hasLaunched = false
     @State private var awakeOwner = UUID()
     @State private var isClosing = false
+    @State private var processTerminated = false
     @AppStorage("showPerformanceMonitor") private var showPerformanceMonitor = false
     
     @State private var webView: WKWebView? = nil
@@ -27,7 +28,7 @@ struct GamePlayerView: View {
             
             if server.isRunning, let url = URL(string: "http://127.0.0.1:\(server.port)/index.html") {
                 // 底层：游戏画面
-                GameWebView(url: url, webView: $webView, isGameVisible: isPresented)
+                GameWebView(url: url, webView: $webView, isGameVisible: isPresented, processTerminated: $processTerminated)
                     .ignoresSafeArea()
                 
                 // 次层：流体玻璃虚拟控制器浮层
@@ -96,6 +97,18 @@ struct GamePlayerView: View {
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
             ScreenAwakeController.shared.refresh()
         }
+        .alert("游戏运行已中断", isPresented: Binding(
+            get: { processTerminated && isPresented }, set: { _ in }
+        )) {
+            Button("重新启动游戏") {
+                processTerminated = false
+                GameLogManager.shared.log("用户选择重新启动游戏；请从游戏菜单读取已保存进度", level: .info)
+                webView?.reload()
+            }
+            Button("返回游戏库", role: .cancel) { onDismiss() }
+        } message: {
+            Text("WebKit 游戏进程已终止。重新启动会回到游戏入口，无法恢复未保存的进度。原有存档保留。")
+        }
         .statusBarHidden(isPresented)
     }
     
@@ -140,6 +153,7 @@ struct GamePlayerView: View {
     private func exitGame() {
         guard !isClosing else { return }
         isClosing = true
+        if processTerminated { cleanup(); onClose(); return }
         guard let webView = webView else { cleanup(); onClose(); return }
         webView.callAsyncJavaScript("window.__emuSetPaused?.(true); window.__emuReleaseKeys?.(); if(window.__emuFlushSaves) await window.__emuFlushSaves(); return true;",
             arguments: [:], in: nil, in: .page) { _ in
