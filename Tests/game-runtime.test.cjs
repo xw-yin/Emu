@@ -271,6 +271,44 @@ test('title frame loader prefetches only a neighbour and does not preload the fu
     assert.equal(urls.length, 103, 'only current and next frames loaded during traversal');
     assert.notEqual(env.ctx.__emuTitleFrame(data, 0), first, 'old frame was evicted rather than pinned');
 });
+test('action sequence frame loader keeps a 2-frame sliding window and AudioManager stop releases PCM buffers', () => {
+    const env = environment();
+    const urls = [];
+    env.ctx.Bitmap = {load(url) { urls.push(url); return {isReady: () => true}; }};
+    env.ctx.SceneManager = {onSceneTerminate() {}};
+    const oldBgm = {_buffer: {length: 44100 * 180}, _data: new Uint8Array(1024), _loadListeners: [() => {}]};
+    env.ctx.AudioManager = {
+        _bgmBuffer: oldBgm,
+        stopBgm() { this._bgmBuffer = null; }
+    };
+    env.ctx.__emuInstallRuntime();
+    const stateData = {gif_src: Array.from({length: 50}, (_, i) => 'cg_' + i), gif_src_file: 'img/Special__actionSeq/', tint: 0, smooth: false};
+    const stateUnit = {_drill_curIndex: 0, drill_data: () => stateData};
+    const controller = {
+        _drill_curBitmapPath: 'img/Special__actionSeq/',
+        _drill_curBitmapName: 'cg_0',
+        _drill_curBitmapTint: 0,
+        _drill_curBitmapSmooth: false,
+        drill_controllerMain_Act_isPlayingAct: () => false,
+        drill_controllerMain_Node_getCurState_Private: () => stateUnit
+    };
+    const first = env.ctx.__emuActionFrame(controller);
+    assert.equal(urls.length, 2, 'loads current frame and prefetches next frame');
+    assert.equal(env.ctx.__emuActionFrame(controller), first, 'reuses current frame while active');
+    for (let i = 1; i < 50; i++) {
+        stateUnit._drill_curIndex = i;
+        controller._drill_curBitmapName = 'cg_' + i;
+        env.ctx.__emuActionFrame(controller);
+    }
+    assert.equal(urls.length, 51);
+    stateUnit._drill_curIndex = 0;
+    controller._drill_curBitmapName = 'cg_0';
+    assert.notEqual(env.ctx.__emuActionFrame(controller), first, 'evicts past frames from sliding window');
+    env.ctx.AudioManager.stopBgm();
+    assert.equal(oldBgm._buffer, null, 'releases decoded AudioBuffer on stopBgm');
+    assert.equal(oldBgm._data, null);
+    assert.equal(oldBgm._loadListeners.length, 0);
+});
 test('MV repeated library round trips cancel hidden frames and keep exactly one update loop', () => {
     const env = environment();
     const frames = new Map();

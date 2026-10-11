@@ -433,6 +433,7 @@
     }
     const heldKeys = new Map();
     const titleFrames = new WeakMap();
+    const actionFrames = new WeakMap();
     let performanceEnabled = false;
     let previousFrameTime = 0;
     let frameIntervals = [];
@@ -489,6 +490,59 @@
         for (const id of frames.keys()) if (!wanted.includes(id)) frames.delete(id);
         const current = frames.get(index);
         if (current.isError?.()) throw new Error('标题动画图片读取失败: ' + data.src_img[index]);
+        return current;
+    };
+    window.__emuActionFrame = controller => {
+        if (!controller) return null;
+        const path = controller._drill_curBitmapPath || '';
+        const name = controller._drill_curBitmapName || '';
+        const tint = controller._drill_curBitmapTint || 0;
+        const smooth = !!controller._drill_curBitmapSmooth;
+        if (!name) {
+            return window.ImageManager?.loadEmptyBitmap ? window.ImageManager.loadEmptyBitmap() :
+                window.ImageManager?.loadBitmap?.(path, '', tint, smooth) || null;
+        }
+        let frames = actionFrames.get(controller);
+        if (!frames) { frames = new Map(); actionFrames.set(controller, frames); }
+        const makeKey = (p, n, t, s) => `${p}${n}:${t}:${s ? 1 : 0}`;
+        const load = (p, n, t, s) => {
+            if (window.Bitmap?.load) {
+                const bitmap = window.Bitmap.load(p + encodeURIComponent(n) + '.png');
+                bitmap.smooth = s;
+                if (t && typeof bitmap.addLoadListener === 'function') {
+                    bitmap.addLoadListener(() => bitmap.rotateHue?.(t));
+                }
+                return bitmap;
+            }
+            return window.ImageManager?.loadBitmap?.(p, n, t, s) || null;
+        };
+        const currentKey = makeKey(path, name, tint, smooth);
+        const wanted = [currentKey];
+        const unit = controller.drill_controllerMain_Act_isPlayingAct?.() ?
+            controller._drill_act_curController :
+            controller.drill_controllerMain_Node_getCurState_Private?.();
+        const unitData = unit?.drill_data?.();
+        const list = Array.isArray(unitData?.gif_src) ? unitData.gif_src : null;
+        if (list && list.length > 1) {
+            const curIdx = (typeof unit._drill_curIndex === 'number' && list[unit._drill_curIndex] === name) ?
+                unit._drill_curIndex : list.indexOf(name);
+            if (curIdx >= 0) {
+                const nextIdx = (curIdx + (unitData.gif_back_run ? list.length - 1 : 1)) % list.length;
+                const nextName = list[nextIdx];
+                if (nextName) {
+                    const nextPath = unitData.gif_src_file || path;
+                    const nextTint = unitData.tint ?? tint;
+                    const nextSmooth = unitData.smooth !== undefined ? !!unitData.smooth : smooth;
+                    const nextKey = makeKey(nextPath, nextName, nextTint, nextSmooth);
+                    if (nextKey !== currentKey) wanted.push(nextKey);
+                    if (!frames.has(nextKey)) frames.set(nextKey, load(nextPath, nextName, nextTint, nextSmooth));
+                }
+            }
+        }
+        if (!frames.has(currentKey)) frames.set(currentKey, load(path, name, tint, smooth));
+        for (const key of frames.keys()) if (!wanted.includes(key)) frames.delete(key);
+        const current = frames.get(currentKey);
+        if (current?.isError?.()) throw new Error('动作序列图片读取失败: ' + name);
         return current;
     };
     function keyNumber(key, code) {
@@ -789,6 +843,24 @@
             canvas.addEventListener('webglcontextrestored', () => {
                 log('info', '[显存管理] WebGL 上下文已成功恢复');
             }, false);
+        }
+
+        // 6. 释放已停止/切换的 BGM/BGS/ME 解码后 PCM AudioBuffer 引用 (单首可达 60~90MB)
+        if (window.AudioManager) {
+            for (const [method, prop] of [['stopBgm', '_bgmBuffer'], ['stopBgs', '_bgsBuffer'], ['stopMe', '_meBuffer']]) {
+                wrap(window.AudioManager, method, original => function (...args) {
+                    const prev = this?.[prop];
+                    const result = original.apply(this, args);
+                    if (prev && this?.[prop] !== prev) {
+                        try {
+                            prev._buffer = null;
+                            prev._data = null;
+                            if (Array.isArray(prev._loadListeners)) prev._loadListeners.length = 0;
+                        } catch (_) {}
+                    }
+                    return result;
+                });
+            }
         }
     }
 

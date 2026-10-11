@@ -765,7 +765,9 @@ final class LocalGameServer: ObservableObject {
             let decoratorStateReplacement = "for(var i = 0; false && i < data['state_tank'].length ; i++){"
             let decoratorActionReplacement = "for(var i = 0; false && i < data['act_tank'].length ; i++){"
             let waitPreload = "if( this._drill_controller._drill_waitForPreload == false ){ return; }"
-            let waitPreloadReplacement = "if( this._drill_controller._drill_waitForPreload == false ){ return; } if( this._drill_controller._drill_visible == true && this._drill_controller._drill_curBitmapName != \"\" ){ var cur_bitmap = ImageManager.loadBitmap( this._drill_controller._drill_curBitmapPath, this._drill_controller._drill_curBitmapName, this._drill_controller._drill_curBitmapTint, this._drill_controller._drill_curBitmapSmooth ); if( cur_bitmap && typeof cur_bitmap.isReady === \"function\" && cur_bitmap.isReady() == false ){ return false; } }"
+            let waitPreloadReplacement = "if( this._drill_controller._drill_waitForPreload == false ){ return; } if( this._drill_controller._drill_visible == true && this._drill_controller._drill_curBitmapName != \"\" ){ var cur_bitmap = window.__emuActionFrame ? window.__emuActionFrame( this._drill_controller ) : ImageManager.loadBitmap( this._drill_controller._drill_curBitmapPath, this._drill_controller._drill_curBitmapName, this._drill_controller._drill_curBitmapTint, this._drill_controller._drill_curBitmapSmooth ); if( cur_bitmap && typeof cur_bitmap.isReady === \"function\" && cur_bitmap.isReady() == false ){ return false; } }"
+            let updateLoad = "var temp_bitmap = ImageManager.loadBitmap("
+            let updateLoadReplacement = "var temp_bitmap = window.__emuActionFrame ? window.__emuActionFrame( this._drill_controller ) : ImageManager.loadBitmap("
             var adapted = false
             let stateCount = source.components(separatedBy: statePreload).count - 1
             let actionCount = source.components(separatedBy: actionPreload).count - 1
@@ -781,6 +783,9 @@ final class LocalGameServer: ObservableObject {
                 source = source.replacingOccurrences(of: decoratorStateLoad, with: decoratorStateReplacement)
                 source = source.replacingOccurrences(of: decoratorActionLoad, with: decoratorActionReplacement)
                 source = source.replacingOccurrences(of: waitPreload, with: waitPreloadReplacement)
+                if source.components(separatedBy: updateLoad).count - 1 == 1 {
+                    source = source.replacingOccurrences(of: updateLoad, with: updateLoadReplacement)
+                }
                 adapted = true
             }
             if adapted {
