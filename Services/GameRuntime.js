@@ -398,12 +398,17 @@
     }
     let viewportInstalled = false;
     let resizeTimer;
+    let viewportSize = '';
     window.__emuRefreshViewport = () => {
+        if (hostPaused || document.hidden) return;
         const graphics = window.Graphics;
         if (!graphics || !graphics._canvas || !window.innerWidth || !window.innerHeight) return;
+        const size = window.innerWidth + 'x' + window.innerHeight;
+        if (size === viewportSize) return;
         // Keep engine resolution and plugin resize hooks; only refresh its display
         // fit after WebKit has the final viewport dimensions.
         if (typeof graphics._onWindowResize === 'function') graphics._onWindowResize();
+        viewportSize = size;
     };
     function scheduleViewportRefresh() {
         clearTimeout(resizeTimer);
@@ -560,6 +565,7 @@
         } else {
             install();
             scheduleMonitor();
+            scheduleViewportRefresh();
             if (resumeScene) {
                 resumeStartedAt = Date.now();
                 manager?.resume?.();
@@ -809,6 +815,12 @@
         // Only replace that known scheduler; custom/plugin schedulers stay intact.
         if (manager && /requestAnimationFrame\(this\.update\.bind\(this\)\)/.test(String(manager.requestUpdate))) {
             wrap(manager, 'requestUpdate', () => function () {
+                // Boot can finish after the host hid the page. Preserve the
+                // intent to start the loop when the user returns.
+                if (hostPaused && !this._stopped) {
+                    resumeScene = true;
+                    this.stop?.();
+                }
                 if (hostPaused || this._stopped || pendingSceneFrame !== null) return;
                 const frame = window.requestAnimationFrame(() => {
                     if (pendingSceneFrame !== frame) return;

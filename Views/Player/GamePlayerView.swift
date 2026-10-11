@@ -93,9 +93,6 @@ struct GamePlayerView: View {
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
             DispatchQueue.main.async { updatePresentation() }
         }
-        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
-            webView?.evaluateJavaScript("window.__emuSetPaused?.(true)", completionHandler: nil)
-        }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
             ScreenAwakeController.shared.refresh()
         }
@@ -138,8 +135,6 @@ struct GamePlayerView: View {
     private func updatePresentation() {
         updateIdleTimer()
         OrientationDelegate.apply(isPresented ? gameOrientation : "auto")
-        let paused = !isPresented || UIApplication.shared.applicationState != .active
-        webView?.evaluateJavaScript("window.__emuSetPaused?.(\(paused ? "true" : "false"))", completionHandler: nil)
     }
 
     private func exitGame() {

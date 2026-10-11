@@ -383,6 +383,36 @@ test('RPG viewport replaces fixed page width and refreshes engine after settled 
     env.ctx.innerWidth = 0;
     env.ctx.__emuRefreshViewport();
     assert.equal(resized, 1, 'ignore transient zero bounds');
+    env.ctx.__emuSetPaused(true);
+    env.ctx.innerWidth = 390; env.ctx.innerHeight = 844;
+    env.ctx.__emuRefreshViewport();
+    assert.equal(resized, 1, 'do not clear the paused canvas during rotation');
+    env.ctx.__emuSetPaused(false);
+    env.ctx.__emuRefreshViewport();
+    assert.equal(resized, 2, 'apply deferred dimensions after resuming');
+    env.ctx.__emuRefreshViewport();
+    assert.equal(resized, 2, 'native and browser resize callbacks must not reset the same canvas twice');
+});
+
+test('MV boot completing while hidden starts one loop when returning to the game', () => {
+    const env = environment();
+    let frames = 0;
+    env.ctx.requestAnimationFrame = () => ++frames;
+    env.ctx.cancelAnimationFrame = () => {};
+    env.ctx.__emuSetPaused(true);
+    vm.runInContext(`SceneManager = {
+        _stopped: false, update() {}, stop() { this._stopped = true; },
+        resume() { this._stopped = false; this.requestUpdate(); },
+        requestUpdate() { if (!this._stopped) requestAnimationFrame(this.update.bind(this)); }
+    };`, env.ctx);
+    env.ctx.__emuInstallRuntime();
+    env.ctx.SceneManager.requestUpdate();
+    assert.equal(frames, 0);
+    env.ctx.__emuSetPaused(false);
+    assert.equal(env.ctx.SceneManager._stopped, false);
+    assert.equal(frames, 1);
+    env.ctx.__emuSetPaused(false);
+    assert.equal(frames, 1);
 });
 
 function keyboardEnvironment() {

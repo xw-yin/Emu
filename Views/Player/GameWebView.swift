@@ -3,6 +3,13 @@ import WebKit
 
 // Notify the page after rotation/layout settles, not at an intermediate size.
 final class GameViewportWebView: WKWebView {
+    var onWindowChange: (() -> Void)?
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        onWindowChange?()
+    }
+
     private var previousSize: CGSize = .zero
     private var resizeWork: DispatchWorkItem?
 
@@ -165,6 +172,7 @@ struct GameWebView: UIViewRepresentable {
         // mutable backing array; re-adding while iterating that view grows it forever.
         context.coordinator.baseScripts = [vorbisScript, audioScript, unlockScript]
         context.coordinator.webView = webView
+        webView.onWindowChange = { [weak coordinator = context.coordinator] in coordinator?.syncPlayback() }
         do {
             guard let runtimeURL = Bundle.main.url(forResource: "GameRuntime", withExtension: "js") else {
                 throw CocoaError(.fileNoSuchFile)
@@ -181,6 +189,7 @@ struct GameWebView: UIViewRepresentable {
     func updateUIView(_ uiView: WKWebView, context: Context) {
         context.coordinator.parent = self
         context.coordinator.webView = uiView
+        context.coordinator.syncPlayback()
     }
     
     static func dismantleUIView(_ uiView: WKWebView, coordinator: Coordinator) {
@@ -204,10 +213,34 @@ struct GameWebView: UIViewRepresentable {
         var baseScripts: [WKUserScript] = []
         var runtime = ""
         private var navigationGeneration = 0
+        private var lastPaused: Bool?
+
+        func syncPlayback(force: Bool = false) {
+            guard isActive, let webView = webView else { return }
+            let active = webView.window?.windowScene?.activationState == .foregroundActive
+            let paused = !parent.isGameVisible || !active
+            guard force || lastPaused != paused else { return }
+            lastPaused = paused
+            webView.evaluateJavaScript("window.__emuSetPaused?.(\(paused ? "true" : "false")); true") { [weak self] _, error in
+                guard let self = self, self.isActive else { return }
+                if let error = error {
+                    self.lastPaused = nil
+                    GameLogManager.shared.log("游戏暂停/恢复请求失败：\(error.localizedDescription)", level: .warning)
+                }
+            }
+        }
+
+        @objc private func sceneStateChanged(_ notification: Notification) {
+            if let scene = notification.object as? UIScene, let own = webView?.window?.windowScene, scene !== own { return }
+            DispatchQueue.main.async { [weak self] in self?.syncPlayback() }
+        }
         
         init(_ parent: GameWebView) {
             self.parent = parent
             super.init()
+            for name in [UIScene.didActivateNotification, UIScene.willDeactivateNotification, UIScene.didEnterBackgroundNotification, UIApplication.didBecomeActiveNotification] {
+                NotificationCenter.default.addObserver(self, selector: #selector(sceneStateChanged(_:)), name: name, object: nil)
+            }
             NotificationCenter.default.addObserver(
                 self,
                 selector: #selector(handleMemoryWarning),
@@ -330,13 +363,13 @@ struct GameWebView: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+            lastPaused = nil
             GameLogManager.shared.log("正在请求 index.html 网页入口...", level: .server)
         }
         
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             GameLogManager.shared.log("网页加载完成，等待游戏场景就绪...", level: .success)
-            let paused = !parent.isGameVisible || UIApplication.shared.applicationState != .active
-            webView.evaluateJavaScript("window.__emuSetPaused?.(\(paused ? "true" : "false"))", completionHandler: nil)
+            syncPlayback(force: true)
         }
         
         private var terminateCount = 0
