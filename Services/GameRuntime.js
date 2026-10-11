@@ -33,10 +33,20 @@
         try { window.webkit?.messageHandlers?.emuLog?.postMessage({level, message: String(message)}); }
         catch (_) { /* The native handler can disappear during navigation teardown. */ }
     }
+    let lastPluginCmdLog = '', lastPluginCmdAt = 0;
     for (const level of ['log', 'warn', 'error']) {
         const original = console[level];
         console[level] = function (...args) {
-            log(level === 'warn' ? 'warning' : level === 'error' ? 'error' : 'info', args.map(describe).join(' '));
+            const text = args.map(describe).join(' ');
+            if (level === 'log' && text.startsWith('>')) {
+                const now = Date.now();
+                if (text === lastPluginCmdLog && now - lastPluginCmdAt < 10000) {
+                    return original.apply(console, args);
+                }
+                lastPluginCmdLog = text;
+                lastPluginCmdAt = now;
+            }
+            log(level === 'warn' ? 'warning' : level === 'error' ? 'error' : 'info', text);
             original.apply(console, args);
         };
     }
@@ -839,6 +849,30 @@
         if (window.ImageCache && typeof window.ImageCache.limit === 'number') {
             window.ImageCache.limit = Math.min(window.ImageCache.limit, 12 * 1000 * 1000);
         }
+        if (window.ImageCache?.prototype) {
+            wrap(window.ImageCache.prototype, '_truncateCache', original => function (...args) {
+                const items = this?._items;
+                const before = items && typeof items === 'object' ? Object.entries(items) : null;
+                const result = original.apply(this, args);
+                if (before && items) {
+                    for (const [key, entry] of before) {
+                        if (!Object.prototype.hasOwnProperty.call(items, key)) {
+                            try { entry?.bitmap?.__baseTexture?.dispose?.(); } catch (_) {}
+                        }
+                    }
+                }
+                return result;
+            });
+        }
+
+        // 3a. 禁用 Game_Interpreter.requestImages 跨公共事件全分支预加载:
+        // 本地回环 (127.0.0.1) 按需加载延迟 <2ms，而递归扫描公共事件所有未执行 if/else 分支会把大量未触发的立绘塞入解码队列。
+        if (window.Game_Interpreter && typeof window.Game_Interpreter.requestImages === 'function') {
+            wrap(window.Game_Interpreter, 'requestImages', () => function () {});
+        }
+        if (window.ImageManager?._requestQueue && typeof window.ImageManager._requestQueue.clear === 'function') {
+            try { window.ImageManager._requestQueue.clear(); } catch (_) {}
+        }
 
         // 3b. 收紧 PIXI 纹理回收周期 (默认 3600 帧=60 秒会在 _managedTextures 中强引用已淘汰的 CPU 源图与 GPU 纹理)
         if (window.PIXI?.settings) {
@@ -869,6 +903,14 @@
                 const result = original.apply(this, args);
                 if (prevTexture && this.__baseTexture && prevTexture !== this.__baseTexture) {
                     try { prevTexture.dispose?.(); } catch (_) {}
+                }
+                return result;
+            });
+            wrap(window.Bitmap.prototype, 'decode', original => function (...args) {
+                const wasReady = typeof this.isReady === 'function' ? this.isReady() : false;
+                const result = original.apply(this, args);
+                if (!wasReady && typeof this.isReady === 'function' && this.isReady()) {
+                    try { window.ImageManager?._imageCache?._truncateCache?.(); } catch (_) {}
                 }
                 return result;
             });

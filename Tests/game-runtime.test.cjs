@@ -364,6 +364,38 @@ test('action sequence frame loader keeps a 2-frame sliding window and releases C
     assert.equal(oldBgm._buffer, null, 'releases decoded AudioBuffer on stopBgm');
     assert.equal(oldBgm._data, null);
     assert.equal(oldBgm._loadListeners.length, 0);
+
+    // Same-map decode triggers ImageCache._truncateCache, which disposes evicted BaseTextures.
+    let cacheEvictDisposed = 0, requestImagesCalled = 0, queueCleared = 0;
+    function FakeImageCache() {
+        this._items = {
+            oldPic: {bitmap: {__baseTexture: {dispose() { cacheEvictDisposed++; }}}},
+            newPic: {bitmap: {__baseTexture: {dispose() { cacheEvictDisposed++; }}}}
+        };
+    }
+    FakeImageCache.prototype = {
+        _truncateCache() { delete this._items.oldPic; }
+    };
+    env.ctx.ImageCache = FakeImageCache;
+    const cacheInstance = new FakeImageCache();
+    env.ctx.ImageManager = {_imageCache: cacheInstance, _requestQueue: {clear() { queueCleared++; }}};
+    env.ctx.Game_Interpreter = {requestImages() { requestImagesCalled++; }};
+    FakeBitmap.prototype.isReady = function () { return !!this._ready; };
+    FakeBitmap.prototype.decode = function () { this._ready = true; };
+    env.ctx.__emuInstallRuntime();
+    assert.equal(queueCleared, 1);
+    env.ctx.Game_Interpreter.requestImages([{code: 231, parameters: [1, 'unused']}]);
+    assert.equal(requestImagesCalled, 0, 'disables speculative event branch image preloading');
+    const decodingBitmap = new FakeBitmap();
+    decodingBitmap.decode();
+    assert.equal(cacheEvictDisposed, 1, 'disposes GPU BaseTexture when ImageCache._truncateCache evicts on decode');
+
+    // Repetitive >-prefixed plugin command console.log spam is throttled.
+    const beforeLogCount = env.logs.length;
+    env.ctx.console.log('>行走图额外位置偏移 : 偏移量[0,-12]');
+    env.ctx.console.log('>行走图额外位置偏移 : 偏移量[0,-12]');
+    env.ctx.console.log('>行走图额外位置偏移 : 偏移量[0,-12]');
+    assert.equal(env.logs.length - beforeLogCount, 1, 'throttles identical consecutive Drill plugin command logs');
 });
 test('MV repeated library round trips cancel hidden frames and keep exactly one update loop', () => {
     const env = environment();

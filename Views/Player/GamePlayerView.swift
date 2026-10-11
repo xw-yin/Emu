@@ -32,7 +32,7 @@ struct GamePlayerView: View {
                     .ignoresSafeArea()
                 
                 // 次层：流体玻璃虚拟控制器浮层
-                VirtualControllerOverlay(gameTitle: game.title, webView: webView,
+                VirtualControllerOverlay(gameTitle: game.title, webView: processTerminated ? nil : webView,
                     onExitGame: onDismiss, onCloseGame: exitGame, keepScreenAwake: $keepScreenAwake)
             } else if let error = errorMessage {
                 VStack(spacing: 16) {
@@ -68,7 +68,7 @@ struct GamePlayerView: View {
             }
             
             // 顶层：加载与运行实时日志终端浮层（充当实时极客进度条，可在进入场景后自动折叠）
-            if showPerformanceMonitor && isPresented, let webView = webView {
+            if showPerformanceMonitor && isPresented && !processTerminated, let webView = webView {
                 GamePerformancePanel(webView: webView)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                     .padding(.top, 66)
