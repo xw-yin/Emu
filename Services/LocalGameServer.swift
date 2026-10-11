@@ -691,7 +691,7 @@ final class LocalGameServer: ObservableObject {
             sendResponse(connection: connection, statusCode: 304, headers: cacheHeaders, body: Data())
             return
         }
-        let adaptedNames = ["rpg_managers.js", "rmmz_managers.js", "drill_coreofglobalsave.js", "drill_eventmutiswitch.js",
+        let adaptedNames = ["rpg_managers.js", "rmmz_managers.js", "drill_coreofglobalsave.js", "drill_eventmutiswitch.js", "drill_coreofactionsequence.js",
                             "drill_dialogcharouterglow.js", "mpp_choiceex.js", "drill_titletiledgif.js"]
         let needsAdapter = adaptedNames.contains(targetFileURL.lastPathComponent.lowercased())
         var fileData = Data()
@@ -746,6 +746,46 @@ final class LocalGameServer: ObservableObject {
                 source = source.replacingOccurrences(of: timing, with: "if (!temp_sprite.visible) continue; temp_sprite['_time'] += 1;")
                 source = source.replacingOccurrences(of: advance, with: "var nextFrame = window.__emuTitleFrame(temp_data, inter); if (!nextFrame.isReady()) { temp_sprite['_time'] -= 1; continue; } temp_sprite.bitmap = nextFrame;")
                 fileData = Data(source.utf8)
+            }
+        }
+
+        if targetFileURL.lastPathComponent.lowercased() == "drill_coreofactionsequence.js",
+           var source = String(data: fileData, encoding: .utf8) {
+            // The uploaded project marks 41 action/state groups for preload
+            // (about 3332 frames) and packs up to 1952 frames into a single
+            // sequence that Drill_COAS_SpriteDecorator otherwise loads and pins
+            // all at once. On iOS that exceeds WebKit's memory limit.
+            // Keep normal on-demand frame loading without changing original files.
+            let statePreload = "if( state_data['gif_preload'] == true ){"
+            let actionPreload = "if( act_data['gif_preload'] == true ){"
+            let stateReplacement = "if( false && state_data['gif_preload'] == true ){"
+            let actionReplacement = "if( false && act_data['gif_preload'] == true ){"
+            let decoratorStateLoad = "for(var i = 0; i < data['state_tank'].length ; i++){"
+            let decoratorActionLoad = "for(var i = 0; i < data['act_tank'].length ; i++){"
+            let decoratorStateReplacement = "for(var i = 0; false && i < data['state_tank'].length ; i++){"
+            let decoratorActionReplacement = "for(var i = 0; false && i < data['act_tank'].length ; i++){"
+            let waitPreload = "if( this._drill_controller._drill_waitForPreload == false ){ return; }"
+            let waitPreloadReplacement = "if( this._drill_controller._drill_waitForPreload == false ){ return; } if( this._drill_controller._drill_visible == true && this._drill_controller._drill_curBitmapName != \"\" ){ var cur_bitmap = ImageManager.loadBitmap( this._drill_controller._drill_curBitmapPath, this._drill_controller._drill_curBitmapName, this._drill_controller._drill_curBitmapTint, this._drill_controller._drill_curBitmapSmooth ); if( cur_bitmap && typeof cur_bitmap.isReady === \"function\" && cur_bitmap.isReady() == false ){ return false; } }"
+            var adapted = false
+            let stateCount = source.components(separatedBy: statePreload).count - 1
+            let actionCount = source.components(separatedBy: actionPreload).count - 1
+            if stateCount == 1 && actionCount == 1 {
+                source = source.replacingOccurrences(of: statePreload, with: stateReplacement)
+                source = source.replacingOccurrences(of: actionPreload, with: actionReplacement)
+                adapted = true
+            }
+            let decStateCount = source.components(separatedBy: decoratorStateLoad).count - 1
+            let decActCount = source.components(separatedBy: decoratorActionLoad).count - 1
+            let waitCount = source.components(separatedBy: waitPreload).count - 1
+            if decStateCount == 1 && decActCount == 1 && waitCount == 1 {
+                source = source.replacingOccurrences(of: decoratorStateLoad, with: decoratorStateReplacement)
+                source = source.replacingOccurrences(of: decoratorActionLoad, with: decoratorActionReplacement)
+                source = source.replacingOccurrences(of: waitPreload, with: waitPreloadReplacement)
+                adapted = true
+            }
+            if adapted {
+                fileData = Data(source.utf8)
+                GameLogManager.shared.log("已关闭动作序列的整组预加载，改为按需加载（保留原插件文件）", level: .info)
             }
         }
 

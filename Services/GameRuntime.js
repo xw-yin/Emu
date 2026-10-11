@@ -676,7 +676,8 @@
                    key.includes('/animations/') || key.includes('animations/') ||
                    key.includes('/titles1/') || key.includes('titles1/') ||
                    key.includes('/titles2/') || key.includes('titles2/') ||
-                   key.includes('/pictures/') || key.includes('pictures/');
+                   key.includes('/pictures/') || key.includes('pictures/') ||
+                   key.toLowerCase().includes('special__actionseq');
         };
 
         // 1. MV 缓存: ImageManager._imageCache._items

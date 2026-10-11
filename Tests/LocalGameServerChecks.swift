@@ -118,6 +118,16 @@ struct LocalGameServerChecks {
         try Data("// global save plugin".utf8).write(to: root.appendingPathComponent("js/Drill_CoreOfGlobalSave.js"))
         let (drill, _) = try await request("/js/Drill_CoreOfGlobalSave.js")
         try require(String(decoding: drill, as: UTF8.self).contains("window.__emuInstallRuntime"), "Drill bridge before title plugins")
+        let actionSource = "Game_Temp.prototype.drill_COAS_preloadInit=function(){ if( state_data['gif_preload'] == true ){ reserve(); } if( act_data['gif_preload'] == true ){ reserve(); } }; Drill_COAS_SpriteDecorator.prototype.drill_spriteMain_initAttr=function(){ for(var i = 0; i < data['state_tank'].length ; i++){} for(var i = 0; i < data['act_tank'].length ; i++){} }; Drill_COAS_SpriteDecorator.prototype.drill_spriteMain_isAllBitmapReady=function(){ if( this._drill_controller._drill_waitForPreload == false ){ return; } return true; }"
+        try Data(actionSource.utf8).write(to: root.appendingPathComponent("js/Drill_CoreOfActionSequence.js"))
+        let (action, _) = try await request("/js/Drill_CoreOfActionSequence.js")
+        let actionText = String(decoding: action, as: UTF8.self)
+        try require(actionText.contains("false && state_data['gif_preload'] == true"), "Disable bulk COAS state preload")
+        try require(actionText.contains("false && act_data['gif_preload'] == true"), "Disable bulk COAS action preload")
+        try require(actionText.contains("false && i < data['state_tank'].length"), "Disable decorator bulk state load")
+        try require(actionText.contains("false && i < data['act_tank'].length"), "Disable decorator bulk action load")
+        try require(actionText.contains("cur_bitmap.isReady() == false"), "Wait only for active frame readiness")
+        try require(try String(contentsOf: root.appendingPathComponent("js/Drill_CoreOfActionSequence.js"), encoding: .utf8) == actionSource, "COAS adapter must not edit original plugin")
         let emsSource = "// legacy EMS plugin"
         let emsURL = root.appendingPathComponent("js/Drill_EventMutiSwitch.js")
         try Data(emsSource.utf8).write(to: emsURL)
