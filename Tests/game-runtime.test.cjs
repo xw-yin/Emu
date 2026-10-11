@@ -88,6 +88,37 @@ function mv(env) {
     return env.ctx.StorageManager;
 }
 
+test('memory hooks attach to late engine classes and report bounded cache diagnostics', () => {
+    const env = environment();
+    env.ctx.SceneManager = {};
+    env.ctx.__emuInstallRuntime();
+    let transfers = 0;
+    env.ctx.Game_Player = function () {};
+    env.ctx.Game_Player.prototype = {isTransferring: () => true, _newMapId: 2,
+        performTransfer() { transfers++; return 'transferred'; }};
+    env.ctx.$gameMap = {mapId: () => 1};
+    env.ctx.ImageCache = {limit: 100000000};
+    const bitmap = {width: 1024, height: 1024, isReady: () => true};
+    const items = {'img/tilesets/map.png': {bitmap}, 'img/pictures/kept.png': {bitmap, reservationId: 'scene'}};
+    env.ctx.ImageManager = {_imageCache: {_items: items}};
+    env.ctx.__emuInstallRuntime();
+    const method = env.ctx.Game_Player.prototype.performTransfer;
+    env.ctx.__emuInstallRuntime();
+    assert.equal(env.ctx.Game_Player.prototype.performTransfer, method);
+    assert.equal(env.ctx.ImageCache.limit, 12000000);
+    const player = new env.ctx.Game_Player();
+    assert.equal(player.performTransfer(), 'transferred');
+    assert.equal(transfers, 1);
+    assert.equal(items['img/tilesets/map.png'], undefined);
+    assert.equal(items['img/pictures/kept.png'].bitmap, bitmap);
+    const report = env.ctx.__emuMemoryDiag();
+    assert.equal(report.cachedImages, 1);
+    assert.equal(report.reserved, 1);
+    assert.equal(report.pixelMiB, 4);
+    assert.equal(report.topFolders[0].folder, 'img/pictures');
+    assert.match(report.scope, /不代表进程总内存/);
+});
+
 test('memory purge evicts references without mutating readonly or shared Bitmap resources', () => {
     const env = environment();
     let destroyed = 0;

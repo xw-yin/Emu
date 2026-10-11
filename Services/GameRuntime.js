@@ -614,8 +614,39 @@
     }
 
     // MARK: - 深度显存与内存优化引擎 (iOS WebKit VRAM & Memory Guard)
-    let memoryOptimizerInstalled = false;
     let lastPurgeAt = 0;
+
+    window.__emuMemoryDiag = () => {
+        const groups = new Map(), seen = new Set(), reservedBitmaps = new Set();
+        let count = 0, pending = 0, reserved = 0, pixels = 0;
+        const add = (key, bitmap, reservation) => {
+            if (bitmap && reservation && !reservedBitmaps.has(bitmap)) {
+                reservedBitmaps.add(bitmap);
+                reserved++;
+            }
+            if (!bitmap || seen.has(bitmap)) return;
+            seen.add(bitmap);
+            count++;
+            if (bitmap.isReady && !bitmap.isReady()) pending++;
+            const size = (bitmap.width || 0) * (bitmap.height || 0) * 4;
+            pixels += size;
+            const folder = String(key).split('/').slice(0, -1).join('/') || '(其他)';
+            const group = groups.get(folder) || {folder, count: 0, bytes: 0};
+            group.count++; group.bytes += size;
+            groups.set(folder, group);
+        };
+        for (const [key, item] of Object.entries(window.ImageManager?._imageCache?._items || {})) {
+            add(key, item?.bitmap, item?.reservationId);
+        }
+        for (const [key, bitmap] of Object.entries(window.ImageManager?._cache || {})) {
+            if (typeof bitmap?.isReady === 'function') add(key, bitmap, false);
+        }
+        return {scene: window.SceneManager?._scene?.constructor?.name || '未知',
+            cachedImages: count, pending, reserved, pixelMiB: Math.round(pixels / 1048576),
+            scope: '仅图片缓存；不含插件私有引用、GPU副本和音频，不代表进程总内存',
+            topFolders: [...groups.values()].sort((a, b) => b.bytes - a.bytes || b.count - a.count)
+                .slice(0, 8).map(g => ({folder: g.folder, count: g.count, pixelMiB: Math.round(g.bytes / 1048576)}))};
+    };
 
     // Cache eviction releases only our references; Bitmap internals may be
     // getter-only and textures can still be shared with live sprites.
@@ -690,13 +721,16 @@
     }
 
     window.__emuPurgeMemory = (urgent = false) => {
-        log('warning', `[显存管理] 收到内存控制指令 (${urgent ? '紧急' : '常规'})，开始深度清理...`);
+        log('warning', '[内存诊断] 清理前: ' + JSON.stringify(window.__emuMemoryDiag()));
         purgeTransientImages(urgent);
+        log('info', '[内存诊断] 清理后: ' + JSON.stringify(window.__emuMemoryDiag()));
     };
 
     function installMemoryOptimizer() {
-        if (memoryOptimizerInstalled || !window.SceneManager) return;
-        memoryOptimizerInstalled = true;
+        // Engine classes and plugin replacements arrive at different times.
+        // Each wrap is idempotent; retry missing hooks instead of marking the
+        // whole optimizer complete as soon as SceneManager exists.
+        if (!window.SceneManager) return;
 
         // 1. 场景结束切换边界 (例如从地图切到战斗、或进出菜单)
         wrap(window.SceneManager, 'onSceneTerminate', original => function (...args) {

@@ -222,8 +222,12 @@ struct GameWebView: UIViewRepresentable {
         
         @objc private func handleMemoryWarning() {
             guard isActive else { return }
-            GameLogManager.shared.log("⚠️ 收到系统内存吃紧警告，已触发紧急显存与材质回收", level: .warning)
-            webView?.evaluateJavaScript("window.__emuPurgeMemory?.(true)", completionHandler: nil)
+            GameLogManager.shared.log("收到系统内存警告，正在请求缓存清理及占用诊断", level: .warning)
+            webView?.evaluateJavaScript("window.__emuPurgeMemory?.(true)") { _, error in
+                if let error = error {
+                    GameLogManager.shared.log("内存清理请求未完成：\(error.localizedDescription)", level: .warning)
+                }
+            }
         }
         
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
