@@ -471,6 +471,18 @@
             pendingWrites: queues.size, paused: hostPaused
         };
     };
+    function releasePrivateBitmap(bitmap) {
+        if (!bitmap?.__emuPrivate) return;
+        try { (bitmap.__baseTexture || bitmap._baseTexture)?.dispose?.(); } catch (_) {}
+        try {
+            if (bitmap._image && bitmap.isReady?.() && typeof bitmap._clearImgInstance === 'function') {
+                bitmap._clearImgInstance();
+                if (Array.isArray(window.Bitmap?._reuseImages) && window.Bitmap._reuseImages.length > 16) {
+                    window.Bitmap._reuseImages.length = 16;
+                }
+            }
+        } catch (_) {}
+    }
     window.__emuTitleFrame = (data, index) => {
         let frames = titleFrames.get(data);
         if (!frames) { frames = new Map(); titleFrames.set(data, frames); }
@@ -480,6 +492,7 @@
         for (const id of wanted) {
             if (!frames.has(id)) {
                 const bitmap = window.Bitmap.load(data.src_img_file + data.src_img[id] + '.png');
+                bitmap.__emuPrivate = true;
                 bitmap.smooth = data.smooth;
                 if (data.tint) bitmap.addLoadListener(() => bitmap.rotateHue(data.tint));
                 frames.set(id, bitmap);
@@ -487,7 +500,12 @@
         }
         // Avoid ImageManager's shared cache: the plugin previously pinned every
         // full-resolution bitmap both in Game_Temp and in its title sprite data.
-        for (const id of frames.keys()) if (!wanted.includes(id)) frames.delete(id);
+        for (const [id, bitmap] of frames.entries()) {
+            if (!wanted.includes(id)) {
+                frames.delete(id);
+                releasePrivateBitmap(bitmap);
+            }
+        }
         const current = frames.get(index);
         if (current.isError?.()) throw new Error('标题动画图片读取失败: ' + data.src_img[index]);
         return current;
@@ -508,6 +526,7 @@
         const load = (p, n, t, s) => {
             if (window.Bitmap?.load) {
                 const bitmap = window.Bitmap.load(p + encodeURIComponent(n) + '.png');
+                bitmap.__emuPrivate = true;
                 bitmap.smooth = s;
                 if (t && typeof bitmap.addLoadListener === 'function') {
                     bitmap.addLoadListener(() => bitmap.rotateHue?.(t));
@@ -540,7 +559,12 @@
             }
         }
         if (!frames.has(currentKey)) frames.set(currentKey, load(path, name, tint, smooth));
-        for (const key of frames.keys()) if (!wanted.includes(key)) frames.delete(key);
+        for (const [key, bitmap] of frames.entries()) {
+            if (!wanted.includes(key)) {
+                frames.delete(key);
+                releasePrivateBitmap(bitmap);
+            }
+        }
         const current = frames.get(currentKey);
         if (current?.isError?.()) throw new Error('动作序列图片读取失败: ' + name);
         return current;
@@ -745,6 +769,7 @@
                     if (bitmap) {
                         freedPixelEst += (bitmap.width || 0) * (bitmap.height || 0);
                         purgedCount++;
+                        try { bitmap.__baseTexture?.dispose?.(); } catch (_) {}
                     }
                     delete imageCacheItems[key];
                 }
@@ -763,6 +788,7 @@
                     if (bitmap) {
                         freedPixelEst += (bitmap.width || 0) * (bitmap.height || 0);
                         purgedCount++;
+                        try { bitmap.__baseTexture?.dispose?.(); } catch (_) {}
                     }
                     delete directCache[key];
                 }
@@ -813,6 +839,58 @@
         if (window.ImageCache && typeof window.ImageCache.limit === 'number') {
             window.ImageCache.limit = Math.min(window.ImageCache.limit, 12 * 1000 * 1000);
         }
+
+        // 3b. 收紧 PIXI 纹理回收周期 (默认 3600 帧=60 秒会在 _managedTextures 中强引用已淘汰的 CPU 源图与 GPU 纹理)
+        if (window.PIXI?.settings) {
+            if (typeof window.PIXI.settings.GC_MAX_IDLE === 'number') {
+                window.PIXI.settings.GC_MAX_IDLE = Math.min(window.PIXI.settings.GC_MAX_IDLE, 600);
+            }
+            if (typeof window.PIXI.settings.GC_MAX_CHECK_COUNT === 'number') {
+                window.PIXI.settings.GC_MAX_CHECK_COUNT = Math.min(window.PIXI.settings.GC_MAX_CHECK_COUNT, 180);
+            }
+        }
+        const textureGC = window.Graphics?._renderer?.textureGC;
+        if (textureGC) {
+            if (typeof textureGC.maxIdle === 'number') textureGC.maxIdle = Math.min(textureGC.maxIdle, 600);
+            if (typeof textureGC.checkCountMax === 'number') textureGC.checkCountMax = Math.min(textureGC.checkCountMax, 180);
+        }
+
+        // 3c. 消除 Bitmap.blt 引起的 CPU 2D Canvas + GPU BaseTexture 双倍内存膨胀:
+        // MV 原版 blt 无条件读取 source._canvas，迫使未修改的只读图片创建整张 2D <canvas> 并复制像素、重建纹理。
+        if (window.Bitmap?.prototype) {
+            wrap(window.Bitmap.prototype, 'blt', original => function (source, sx, sy, sw, sh, dx, dy, dw, dh) {
+                if (source && !source.__canvas && source._image && typeof this.bltImage === 'function') {
+                    return this.bltImage(source, sx, sy, sw, sh, dx, dy, dw, dh);
+                }
+                return original.call(this, source, sx, sy, sw, sh, dx, dy, dw, dh);
+            });
+            wrap(window.Bitmap.prototype, '_createCanvas', original => function (...args) {
+                const prevTexture = this.__baseTexture;
+                const result = original.apply(this, args);
+                if (prevTexture && this.__baseTexture && prevTexture !== this.__baseTexture) {
+                    try { prevTexture.dispose?.(); } catch (_) {}
+                }
+                return result;
+            });
+        }
+
+        // 3d. 窗口重绘或菜单背景截图替换旧 Bitmap 时，立即卸载旧 GPU 纹理并移出 _managedTextures
+        wrap(window.Window_Base?.prototype, 'createContents', original => function (...args) {
+            const prev = this.contents;
+            const result = original.apply(this, args);
+            if (prev && prev !== this.contents) {
+                try { prev.__baseTexture?.dispose?.(); } catch (_) {}
+            }
+            return result;
+        });
+        wrap(window.SceneManager, 'snapForBackground', original => function (...args) {
+            const prev = this._backgroundBitmap;
+            const result = original.apply(this, args);
+            if (prev && prev !== this._backgroundBitmap) {
+                try { prev.__baseTexture?.dispose?.(); } catch (_) {}
+            }
+            return result;
+        });
 
         // 4. 修复 Decrypter 解密后的 ObjectURL 泄露
         if (window.Decrypter && typeof window.Decrypter.decryptImg === 'function') {

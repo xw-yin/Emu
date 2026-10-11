@@ -271,17 +271,71 @@ test('title frame loader prefetches only a neighbour and does not preload the fu
     assert.equal(urls.length, 103, 'only current and next frames loaded during traversal');
     assert.notEqual(env.ctx.__emuTitleFrame(data, 0), first, 'old frame was evicted rather than pinned');
 });
-test('action sequence frame loader keeps a 2-frame sliding window and AudioManager stop releases PCM buffers', () => {
+test('action sequence frame loader keeps a 2-frame sliding window and releases CPU/GPU buffers', () => {
     const env = environment();
     const urls = [];
-    env.ctx.Bitmap = {load(url) { urls.push(url); return {isReady: () => true}; }};
-    env.ctx.SceneManager = {onSceneTerminate() {}};
+    let disposed = 0, clearedImg = 0, bltImageCalls = 0, bltCanvasCalls = 0;
+    function FakeBitmap() {}
+    FakeBitmap. _reuseImages = [];
+    FakeBitmap.load = url => {
+        urls.push(url);
+        return {
+            __emuPrivate: false,
+            _image: {src: url},
+            __baseTexture: {dispose() { disposed++; }},
+            isReady: () => true,
+            _clearImgInstance() { clearedImg++; this._image = null; }
+        };
+    };
+    FakeBitmap.prototype = {
+        blt(source) { void source._canvas; bltCanvasCalls++; },
+        bltImage() { bltImageCalls++; },
+        _createCanvas() { this.__baseTexture = {dispose() {}}; }
+    };
+    env.ctx.Bitmap = FakeBitmap;
+    env.ctx.PIXI = {settings: {GC_MAX_IDLE: 3600, GC_MAX_CHECK_COUNT: 600}};
+    let bgDisposed = 0, winDisposed = 0;
+    env.ctx.SceneManager = {
+        _backgroundBitmap: {__baseTexture: {dispose() { bgDisposed++; }}},
+        onSceneTerminate() {},
+        snapForBackground() { this._backgroundBitmap = {__baseTexture: {}}; }
+    };
+    env.ctx.Window_Base = function () {};
+    env.ctx.Window_Base.prototype = {
+        createContents() { this.contents = {__baseTexture: {}}; }
+    };
     const oldBgm = {_buffer: {length: 44100 * 180}, _data: new Uint8Array(1024), _loadListeners: [() => {}]};
     env.ctx.AudioManager = {
         _bgmBuffer: oldBgm,
         stopBgm() { this._bgmBuffer = null; }
     };
     env.ctx.__emuInstallRuntime();
+    assert.equal(env.ctx.PIXI.settings.GC_MAX_IDLE, 600);
+    assert.equal(env.ctx.PIXI.settings.GC_MAX_CHECK_COUNT, 180);
+
+    // Unmodified image-backed Bitmap uses bltImage without triggering lazy _canvas creation.
+    const dest = new FakeBitmap();
+    let sourceCanvasCreated = 0;
+    const unmodifiedSource = {_image: {}, __canvas: null, get _canvas() { sourceCanvasCreated++; return {}; }};
+    dest.blt(unmodifiedSource, 0, 0, 10, 10, 0, 0);
+    assert.equal(bltImageCalls, 1);
+    assert.equal(sourceCanvasCreated, 0, 'must not allocate 2D canvas on unmodified source bitmap');
+    const modifiedSource = {_image: {}, __canvas: {}, get _canvas() { return this.__canvas; }};
+    dest.blt(modifiedSource, 0, 0, 10, 10, 0, 0);
+    assert.equal(bltCanvasCalls, 1);
+
+    let prevTexDisposed = 0;
+    dest.__baseTexture = {dispose() { prevTexDisposed++; }};
+    dest._createCanvas();
+    assert.equal(prevTexDisposed, 1, 'disposes old image BaseTexture when upgrading to 2D canvas');
+
+    const win = new env.ctx.Window_Base();
+    win.contents = {__baseTexture: {dispose() { winDisposed++; }}};
+    win.createContents();
+    assert.equal(winDisposed, 1);
+    env.ctx.SceneManager.snapForBackground();
+    assert.equal(bgDisposed, 1);
+
     const stateData = {gif_src: Array.from({length: 50}, (_, i) => 'cg_' + i), gif_src_file: 'img/Special__actionSeq/', tint: 0, smooth: false};
     const stateUnit = {_drill_curIndex: 0, drill_data: () => stateData};
     const controller = {
@@ -301,6 +355,8 @@ test('action sequence frame loader keeps a 2-frame sliding window and AudioManag
         env.ctx.__emuActionFrame(controller);
     }
     assert.equal(urls.length, 51);
+    assert.ok(disposed >= 49, 'disposes GPU BaseTexture immediately when frames leave the 2-frame window');
+    assert.ok(clearedImg >= 49, 'clears HTMLImageElement buffer immediately when frames leave the 2-frame window');
     stateUnit._drill_curIndex = 0;
     controller._drill_curBitmapName = 'cg_0';
     assert.notEqual(env.ctx.__emuActionFrame(controller), first, 'evicts past frames from sliding window');
