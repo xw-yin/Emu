@@ -847,7 +847,8 @@
         // Keep the engine's LRU and reservation rules. Never destroy a bitmap
         // merely because its cache entry was evicted: live sprites may own it.
         if (window.ImageCache && typeof window.ImageCache.limit === 'number') {
-            window.ImageCache.limit = Math.min(window.ImageCache.limit, 12 * 1000 * 1000);
+            const memoryLimit = window.__emuIncreasedMemoryLimit ? 32 * 1000 * 1000 : 12 * 1000 * 1000;
+            window.ImageCache.limit = Math.min(window.ImageCache.limit, memoryLimit);
         }
         if (window.ImageCache?.prototype) {
             wrap(window.ImageCache.prototype, '_truncateCache', original => function (...args) {

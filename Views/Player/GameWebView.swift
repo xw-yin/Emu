@@ -336,10 +336,12 @@ struct GameWebView: UIViewRepresentable {
                     }
                     do {
                         let data = try result.get()
+                        let memoryReport = MemoryDiagnostics.shared.logDiagnostics()
+                        let memoryFlag = "window.__emuIncreasedMemoryLimit = \(memoryReport.hasIncreasedMemoryEntitlement ? "true" : "false");\n"
                         // 元信息很小，直接以 JSON 注入；不再走 base64+atob，避免大字符串
                         // 在 web 进程内的瞬时内存峰值。顺手转义 </ 防止脚本截断。
                         let json = String(decoding: data, as: UTF8.self).replacingOccurrences(of: "</", with: "<\\/")
-                        let bootstrap = "window.__emuBootstrap = \(json);\n"
+                        let bootstrap = memoryFlag + "window.__emuBootstrap = \(json);\n"
                         let controller = webView.configuration.userContentController
                         controller.removeAllUserScripts()
                         // Logging/runtime first, so failures in later compatibility scripts are captured.

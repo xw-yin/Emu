@@ -73,6 +73,11 @@ jobs:
           swiftc -parse-as-library Services/ScreenAwakeController.swift Tests/ScreenAwakeChecks.swift -o "$RUNNER_TEMP/emu-awake-checks"
           "$RUNNER_TEMP/emu-awake-checks"
 
+      - name: Check memory diagnostics and entitlement detection
+        run: |
+          swiftc -parse-as-library Services/MemoryDiagnostics.swift Services/GameLogManager.swift Tests/MemoryDiagnosticsChecks.swift -o "$RUNNER_TEMP/emu-mem-checks"
+          "$RUNNER_TEMP/emu-mem-checks"
+
       - name: Check library refresh and identity
         run: |
           swiftc -parse-as-library Models/Game.swift Services/GameLibraryManager.swift Tests/GameLibraryChecks.swift -o "$RUNNER_TEMP/emu-library-checks"

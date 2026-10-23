@@ -29,12 +29,14 @@
 		EE6DD0B1D841D656C068FA8A /* GameLogManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 667C1E3DE23EFEFA61376EFF /* GameLogManager.swift */; };
 		FC6FAED3DA58EDAFAE21AA87 /* Game.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD4B23AB27467A48751F45A5 /* Game.swift */; };
         A01000000000000000000006 /* ScreenAwakeController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A01000000000000000000007 /* ScreenAwakeController.swift */; };
+        A01000000000000000000008 /* MemoryDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = A01000000000000000000009 /* MemoryDiagnostics.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
         A01000000000000000000002 /* GameRuntime.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = GameRuntime.js; sourceTree = "<group>"; };
         A01000000000000000000004 /* EmuScriptAssets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmuScriptAssets.swift; sourceTree = "<group>"; };
         A01000000000000000000007 /* ScreenAwakeController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenAwakeController.swift; sourceTree = "<group>"; };
+        A01000000000000000000009 /* MemoryDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryDiagnostics.swift; sourceTree = "<group>"; };
         A01000000000000000000005 /* Emu.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Emu.entitlements; sourceTree = "<group>"; };
 		02C87D94B34BC5FEB00E41D6 /* KeyMappingEditorSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyMappingEditorSheet.swift; sourceTree = "<group>"; };
 		096225C309A36E7F1D052E84 /* KeyMapping.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyMapping.swift; sourceTree = "<group>"; };
@@ -136,6 +138,7 @@
                 A01000000000000000000002 /* GameRuntime.js */,
                 A01000000000000000000004 /* EmuScriptAssets.swift */,
                 A01000000000000000000007 /* ScreenAwakeController.swift */,
+                A01000000000000000000009 /* MemoryDiagnostics.swift */,
 				7F19468944925D4EB23166F1 /* GameLibraryManager.swift */,
 				667C1E3DE23EFEFA61376EFF /* GameLogManager.swift */,
 				26736BE0DE2061E77005ABF0 /* HapticManager.swift */,
@@ -241,6 +244,7 @@
 				EE6DD0B1D841D656C068FA8A /* GameLogManager.swift in Sources */,
 				E357AC7D09FE292A0178567F /* VirtualControllerOverlay.swift in Sources */,
 				A01000000000000000000006 /* ScreenAwakeController.swift in Sources */,
+				A01000000000000000000008 /* MemoryDiagnostics.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
